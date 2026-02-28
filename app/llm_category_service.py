@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from collections import Counter
 from urllib import request
 
 
@@ -12,11 +13,10 @@ class LlmCategoryService:
         self.timeout_seconds = int(os.getenv("CATEGORY_NAME_LLM_TIMEOUT", "25"))
 
     def generate_category(self, keywords: list[str], sample_texts: list[str], fallback_label: str) -> tuple[str, str | None]:
-        if not self.enabled:
-            return fallback_label, None
+        fallback_description = self._build_fallback_description(keywords, sample_texts, fallback_label)
 
-        if not keywords:
-            return fallback_label, None
+        if not self.enabled:
+            return fallback_label, fallback_description
 
         prompt = self._build_prompt(keywords, sample_texts)
         payload = {
@@ -45,21 +45,23 @@ class LlmCategoryService:
 
             category_name, category_description = self._parse_category_payload(model_output)
             if category_name:
-                return category_name, category_description
-            return fallback_label, None
+                return category_name, category_description or fallback_description
+            return fallback_label, fallback_description
         except Exception:
-            return fallback_label, None
+            return fallback_label, fallback_description
 
     def _build_prompt(self, keywords: list[str], sample_texts: list[str]) -> str:
-        sample_snippets = [text.strip() for text in sample_texts if text and text.strip()][:3]
-        snippets_block = "\n".join(f"- {snippet[:180]}" for snippet in sample_snippets)
-        keyword_block = ", ".join(keywords)
+        sample_snippets = [text.strip() for text in sample_texts if text and text.strip()][:8]
+        snippets_block = "\n".join(f"- {snippet[:260]}" for snippet in sample_snippets)
+        keyword_block = ", ".join(keywords) if keywords else "(sin keywords explícitas)"
 
         return (
             "Eres un clasificador semántico para nombrar categorías de contenido.\n"
             "Devuelve SOLO JSON válido con esta forma exacta: {\"category_name\":\"...\",\"category_description\":\"...\"}.\n"
             "Reglas: category_name en español, 2-5 palabras, sin barras '/', sin dos puntos, sin comillas extra.\n"
-            "Reglas: category_description en español, 1 frase breve (max 140 caracteres), explicando por qué cae en esa categoría, intenta tener en cuenta todas las entradas a la hora de generar la categoría.\n"
+            "Reglas: category_description en español, 1 frase breve (max 140 caracteres), explicando por qué cae en esa categoría.\n"
+            "Objetivo: generar un título que represente el tema común de TODO el cluster, no de un solo elemento.\n"
+            "Si hay variaciones entre entradas, prioriza el denominador común.\n"
             f"Keywords TF-IDF: {keyword_block}\n"
             f"Ejemplos del cluster:\n{snippets_block}\n"
         )
@@ -131,3 +133,65 @@ class LlmCategoryService:
         if len(cleaned) > 140:
             cleaned = cleaned[:140].rstrip()
         return cleaned
+
+    def _build_fallback_description(self, keywords: list[str], sample_texts: list[str], fallback_label: str) -> str:
+        clean_keywords = [self._normalize_keyword(keyword) for keyword in keywords if self._normalize_keyword(keyword)]
+        clean_keywords = list(dict.fromkeys(clean_keywords))[:4]
+
+        if not clean_keywords:
+            clean_keywords = self._extract_terms_from_samples(sample_texts)[:4]
+
+        if clean_keywords:
+            description = f"Contenido relacionado con {', '.join(clean_keywords)}."
+        else:
+            clean_label = " ".join(str(fallback_label or "contenido relacionado").split()).strip().lower()
+            if not clean_label:
+                clean_label = "contenido relacionado"
+            description = f"Contenido relacionado con {clean_label}."
+
+        if len(description) > 140:
+            description = description[:140].rstrip()
+        return description
+
+    def _extract_terms_from_samples(self, sample_texts: list[str]) -> list[str]:
+        stop_words = {
+            "de",
+            "la",
+            "el",
+            "en",
+            "y",
+            "a",
+            "que",
+            "los",
+            "las",
+            "un",
+            "una",
+            "por",
+            "para",
+            "con",
+            "del",
+            "sobre",
+            "como",
+            "desde",
+            "hasta",
+            "this",
+            "that",
+            "with",
+            "from",
+            "and",
+            "the",
+        }
+
+        frequencies = Counter()
+        for sample in sample_texts[:10]:
+            for token in re.findall(r"[a-záéíóúñü0-9]{4,}", str(sample).lower()):
+                if token in stop_words:
+                    continue
+                if token.isdigit():
+                    continue
+                frequencies[token] += 1
+
+        return [token for token, _ in frequencies.most_common(8)]
+
+    def _normalize_keyword(self, value: object) -> str:
+        return " ".join(str(value or "").strip().lower().split())

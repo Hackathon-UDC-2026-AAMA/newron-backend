@@ -20,12 +20,55 @@ SUPPORTED_FILE_EXTENSIONS = {
     ".txt",
     ".md",
     ".markdown",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".py",
+    ".java",
+    ".go",
+    ".rs",
+    ".php",
+    ".rb",
+    ".sh",
+    ".css",
+    ".scss",
+    ".less",
+    ".yml",
+    ".yaml",
+    ".xml",
+    ".sql",
     ".docx",
     ".csv",
     ".json",
     ".html",
     ".htm",
     ".rtf",
+}
+
+CODE_FILE_EXTENSIONS = {
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".py",
+    ".java",
+    ".go",
+    ".rs",
+    ".php",
+    ".rb",
+    ".sh",
+    ".css",
+    ".scss",
+    ".less",
+    ".yml",
+    ".yaml",
+    ".xml",
+    ".sql",
 }
 
 GENERIC_FILE_TITLES = {
@@ -79,6 +122,9 @@ def extract_text_from_file(file_bytes: bytes, extension: str) -> str:
     if normalized_extension in {".txt", ".md", ".markdown"}:
         text = file_bytes.decode("utf-8", errors="ignore")
         return _clean_limit(text)
+
+    if normalized_extension in CODE_FILE_EXTENSIONS:
+        return _extract_code_text(file_bytes)
 
     raise ValueError("Formato de archivo no soportado")
 
@@ -197,6 +243,21 @@ def _extract_rtf_text(file_bytes: bytes) -> str:
     without_controls = re.sub(r"\\[a-zA-Z]+\d* ?", " ", decoded)
     without_braces = re.sub(r"[{}]", " ", without_controls)
     return _clean_limit(unescape(without_braces))
+
+
+def _extract_code_text(file_bytes: bytes) -> str:
+    decoded = file_bytes.decode("utf-8", errors="ignore")
+    without_nul = decoded.replace("\x00", " ")
+
+    without_block_comments = re.sub(r"/\*.*?\*/", " ", without_nul, flags=re.DOTALL)
+    without_hash_comments = re.sub(r"(^|\s)#.*", " ", without_block_comments)
+    without_slash_comments = re.sub(r"(^|\s)//.*", " ", without_hash_comments)
+
+    split_camel_case = re.sub(r"([a-z])([A-Z])", r"\1 \2", without_slash_comments)
+    split_separators = re.sub(r"[_\-/\\.]", " ", split_camel_case)
+    keep_word_symbols = re.sub(r"[^a-zA-Z0-9áéíóúñü\s#+]", " ", split_separators)
+
+    return _clean_limit(keep_word_symbols)
 
 
 def _clean_limit(text: str) -> str:

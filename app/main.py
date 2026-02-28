@@ -12,6 +12,7 @@ import qrcode
 from fastapi.responses import StreamingResponse
 import qrcode_terminal
 import json
+import re
 from fastapi import Request
 import psutil
 import os
@@ -496,9 +497,9 @@ def _ingest_input(
             semantic_focus_views, semantic_focus_source = semantic_focus_service.build_focus_views(normalized_text, content_type)
             semantic_focus = semantic_focus_service.compose_focus_text(semantic_focus_views)
         except ValueError as exc:
-            semantic_focus_views = {}
-            semantic_focus = normalized_text
-            semantic_focus_source = f"fallback_on_error:{str(exc)}"
+            semantic_focus_views = semantic_focus_service.build_keyword_fallback_views(normalized_text, content_type)
+            semantic_focus = semantic_focus_service.compose_focus_text(semantic_focus_views) if semantic_focus_views else normalized_text
+            semantic_focus_source = f"keyword_fallback_on_error:{str(exc)}"
     else:
         semantic_focus_views = {}
         semantic_focus = normalized_text
@@ -506,7 +507,16 @@ def _ingest_input(
 
     semantic_focus = _strip_nul(semantic_focus)
 
-    embedding_text = _build_embedding_text(normalized_text, semantic_focus, semantic_focus_views)
+    if semantic_focus_source.startswith("keyword_fallback_on_error") or semantic_focus_source.startswith("fallback_on_error"):
+        embedding_text = _build_embedding_text_canonical(
+            content_type=content_type,
+            normalized_text=normalized_text,
+            original_input=original_input_override or raw_input,
+            metadata=metadata,
+            semantic_focus_views=semantic_focus_views,
+        )
+    else:
+        embedding_text = _build_embedding_text(normalized_text, semantic_focus, semantic_focus_views)
     embedding_text = _strip_nul(embedding_text)
 
     metadata["semantic_focus"] = semantic_focus
@@ -580,6 +590,26 @@ def get_item_file(item_id: int, db: Session = Depends(get_db)) -> FileResponse:
         ".txt": "text/plain",
         ".md": "text/markdown",
         ".markdown": "text/markdown",
+        ".js": "text/javascript",
+        ".jsx": "text/javascript",
+        ".mjs": "text/javascript",
+        ".cjs": "text/javascript",
+        ".ts": "application/typescript",
+        ".tsx": "application/typescript",
+        ".py": "text/x-python",
+        ".java": "text/x-java-source",
+        ".go": "text/x-go",
+        ".rs": "text/plain",
+        ".php": "application/x-httpd-php",
+        ".rb": "text/plain",
+        ".sh": "application/x-sh",
+        ".css": "text/css",
+        ".scss": "text/x-scss",
+        ".less": "text/plain",
+        ".yml": "application/yaml",
+        ".yaml": "application/yaml",
+        ".xml": "application/xml",
+        ".sql": "application/sql",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".csv": "text/csv",
         ".json": "application/json",
@@ -815,6 +845,21 @@ def _normalize_file_type_to_extension(value: str) -> str | None:
             "application/pdf": ".pdf",
             "text/plain": ".txt",
             "text/markdown": ".md",
+            "text/javascript": ".js",
+            "application/javascript": ".js",
+            "application/x-javascript": ".js",
+            "application/typescript": ".ts",
+            "text/typescript": ".ts",
+            "text/x-python": ".py",
+            "text/x-java-source": ".java",
+            "text/x-go": ".go",
+            "application/x-sh": ".sh",
+            "text/css": ".css",
+            "application/yaml": ".yaml",
+            "text/yaml": ".yaml",
+            "application/xml": ".xml",
+            "text/xml": ".xml",
+            "application/sql": ".sql",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
             "text/csv": ".csv",
             "application/json": ".json",
@@ -846,18 +891,139 @@ def _recompute_cluster_state(db: Session, cluster_id: int) -> tuple[bool, int | 
 
     cluster.size = len(cluster_items)
     cluster.centroid = _average_embeddings([item.embedding for item in cluster_items])
-    cluster_label, cluster_description, cluster_keywords = _build_cluster_label([item.normalized_text for item in cluster_items])
+    cluster_label, cluster_description, cluster_keywords = _build_cluster_label(cluster_items)
     cluster.cluster_label = cluster_label
     cluster.cluster_description = cluster_description
     cluster.cluster_keywords = cluster_keywords
     db.flush()
+
+    merged_clusters = _merge_clusters_by_common_keywords(db, cluster)
+    if merged_clusters > 0:
+        return _recompute_cluster_state(db, cluster.id)
+
     return False, cluster.size
 
 
-def _build_cluster_label(cluster_texts: list[str]) -> tuple[str, str | None, list[str]]:
+def _merge_clusters_by_common_keywords(db: Session, primary_cluster: Cluster) -> int:
+    minimum_overlap = max(1, int(os.getenv("CLUSTER_MERGE_MIN_KEYWORD_OVERLAP", "1")))
+    primary_tokens = _normalize_cluster_keywords(primary_cluster.cluster_keywords)
+    if not primary_tokens:
+        return 0
+
+    candidate_clusters = db.query(Cluster).filter(Cluster.id != primary_cluster.id).all()
+    merged_count = 0
+
+    for candidate_cluster in candidate_clusters:
+        candidate_tokens = _normalize_cluster_keywords(candidate_cluster.cluster_keywords)
+        if not candidate_tokens:
+            continue
+
+        overlap = primary_tokens.intersection(candidate_tokens)
+        if len(overlap) < minimum_overlap:
+            continue
+
+        db.query(ContentItem).filter(ContentItem.cluster_id == candidate_cluster.id).update(
+            {ContentItem.cluster_id: primary_cluster.id},
+            synchronize_session=False,
+        )
+        db.delete(candidate_cluster)
+        merged_count += 1
+
+    if merged_count > 0:
+        db.flush()
+
+    return merged_count
+
+
+def _normalize_cluster_keywords(values: list[str] | None) -> set[str]:
+    if not values:
+        return set()
+
+    normalized_tokens: set[str] = set()
+    for value in values:
+        for token in re.findall(r"[a-záéíóúñü0-9]{3,}", str(value).lower()):
+            normalized_tokens.add(token)
+    return normalized_tokens
+
+
+def _build_cluster_label(cluster_items: list[ContentItem]) -> tuple[str, str | None, list[str]]:
+    cluster_texts = [_extract_item_cluster_content(item) for item in cluster_items]
+    cluster_texts = [text for text in cluster_texts if text]
+    if not cluster_texts:
+        cluster_texts = [item.normalized_text for item in cluster_items if item.normalized_text]
+
     tfidf_label, tfidf_keywords = cluster_label_service.build_label(cluster_texts)
     llm_label, llm_description = llm_category_service.generate_category(tfidf_keywords, cluster_texts, fallback_label=tfidf_label)
     return llm_label, llm_description, tfidf_keywords
+
+
+def _extract_item_cluster_content(item: ContentItem) -> str:
+    metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+
+    def clean_text(value: object, max_chars: int = 450) -> str:
+        cleaned = _strip_nul(str(value or "")).strip()
+        if not cleaned:
+            return ""
+        return cleaned[:max_chars]
+
+    content_type = (item.type or "").strip().lower()
+
+    if content_type in {"text", "audio"}:
+        for candidate in [metadata.get("pre_focus_text"), item.original_input, item.normalized_text]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    if content_type == "link":
+        for candidate in [
+            metadata.get("summary"),
+            metadata.get("description"),
+            metadata.get("title"),
+            metadata.get("pre_focus_text"),
+            item.original_input,
+        ]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    if content_type == "youtube":
+        title = clean_text(metadata.get("title"), max_chars=180)
+        description = clean_text(metadata.get("description"), max_chars=320)
+        tags_value = metadata.get("tags", [])
+        tags = ", ".join(str(tag).strip() for tag in tags_value if str(tag).strip()) if isinstance(tags_value, list) else ""
+        tags = clean_text(tags, max_chars=140)
+
+        joined_parts = [part for part in [title, description, tags] if part]
+        if joined_parts:
+            return " | ".join(joined_parts)
+
+        for candidate in [metadata.get("pre_focus_text"), item.original_input]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    if content_type == "file":
+        semantic_views = metadata.get("semantic_focus_views", {})
+        summary = ""
+        if isinstance(semantic_views, dict):
+            summary = clean_text(semantic_views.get("summary"), max_chars=320)
+        for candidate in [
+            metadata.get("preview_text"),
+            summary,
+            metadata.get("file_title"),
+            metadata.get("pre_focus_text"),
+            item.original_input,
+        ]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    for candidate in [metadata.get("pre_focus_text"), item.original_input, item.normalized_text]:
+        resolved = clean_text(candidate)
+        if resolved:
+            return resolved
+
+    return ""
 
 
 def _average_embeddings(embeddings: list[list[float]]) -> list[float]:
@@ -916,6 +1082,119 @@ def _build_embedding_text(normalized_text: str, semantic_focus: str, semantic_fo
         return f"{base_text}\n\nSemantic focus: {focus_text}".strip()
 
     return base_text
+
+
+def _build_embedding_text_canonical(
+    content_type: str,
+    normalized_text: str,
+    original_input: str,
+    metadata: dict,
+    semantic_focus_views: dict,
+) -> str:
+    base_content = _extract_canonical_content_for_embedding(
+        content_type=content_type,
+        normalized_text=normalized_text,
+        original_input=original_input,
+        metadata=metadata,
+        semantic_focus_views=semantic_focus_views,
+    )
+
+    keywords = _extract_keywords_for_embedding(semantic_focus_views)
+    if keywords:
+        return f"{base_content}\n\nkeywords: {', '.join(keywords)}".strip()
+    return base_content
+
+
+def _extract_canonical_content_for_embedding(
+    content_type: str,
+    normalized_text: str,
+    original_input: str,
+    metadata: dict,
+    semantic_focus_views: dict,
+) -> str:
+    def clean_text(value: object, max_chars: int = 1600) -> str:
+        cleaned = _strip_nul(str(value or "")).strip()
+        if not cleaned:
+            return ""
+        return cleaned[:max_chars]
+
+    content_type_normalized = (content_type or "").strip().lower()
+
+    if content_type_normalized in {"text", "audio"}:
+        for candidate in [metadata.get("pre_focus_text"), original_input, normalized_text]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    if content_type_normalized == "link":
+        link_parts = [
+            clean_text(metadata.get("summary"), max_chars=1200),
+            clean_text(metadata.get("title"), max_chars=240),
+        ]
+        joined = "\n\n".join(part for part in link_parts if part)
+        if joined:
+            return joined
+        for candidate in [metadata.get("pre_focus_text"), original_input, normalized_text]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    if content_type_normalized == "youtube":
+        youtube_parts = [
+            clean_text(metadata.get("title"), max_chars=260),
+            clean_text(metadata.get("description"), max_chars=900),
+        ]
+        tags_value = metadata.get("tags", [])
+        if isinstance(tags_value, list):
+            tags = ", ".join(str(tag).strip() for tag in tags_value if str(tag).strip())
+            if tags:
+                youtube_parts.append(clean_text(tags, max_chars=260))
+        joined = "\n\n".join(part for part in youtube_parts if part)
+        if joined:
+            return joined
+        for candidate in [metadata.get("pre_focus_text"), original_input, normalized_text]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    if content_type_normalized == "file":
+        file_parts = [
+            clean_text(metadata.get("preview_text"), max_chars=1600),
+            clean_text(metadata.get("file_title"), max_chars=240),
+            clean_text(semantic_focus_views.get("summary", ""), max_chars=700) if isinstance(semantic_focus_views, dict) else "",
+        ]
+        joined = "\n\n".join(part for part in file_parts if part)
+        if joined:
+            return joined
+        for candidate in [metadata.get("pre_focus_text"), original_input, normalized_text]:
+            resolved = clean_text(candidate)
+            if resolved:
+                return resolved
+
+    for candidate in [metadata.get("pre_focus_text"), original_input, normalized_text]:
+        resolved = clean_text(candidate)
+        if resolved:
+            return resolved
+
+    return clean_text(normalized_text)
+
+
+def _extract_keywords_for_embedding(semantic_focus_views: dict) -> list[str]:
+    raw_keywords = semantic_focus_views.get("keywords", []) if isinstance(semantic_focus_views, dict) else []
+    if not isinstance(raw_keywords, list):
+        return []
+
+    clean_keywords: list[str] = []
+    for keyword in raw_keywords:
+        cleaned_keyword = _strip_nul(str(keyword)).strip().lower()
+        if not cleaned_keyword:
+            continue
+        if cleaned_keyword in clean_keywords:
+            continue
+        clean_keywords.append(cleaned_keyword)
+        if len(clean_keywords) >= 12:
+            break
+    return clean_keywords
 
 
 def _strip_nul(value: str) -> str:

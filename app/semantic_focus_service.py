@@ -1,5 +1,6 @@
 import os
 import re
+from collections import Counter
 from typing import Any
 
 import langextract as lx
@@ -10,9 +11,45 @@ class SemanticFocusService:
         self.enabled = os.getenv("LANGEXTRACT_ENABLED", "true").strip().lower() == "true"
         self.max_chars = int(os.getenv("SEMANTIC_FOCUS_MAX_CHARS", "240"))
         self.max_keywords = int(os.getenv("SEMANTIC_FOCUS_MAX_KEYWORDS", "14"))
+        self.fallback_min_token_len = int(os.getenv("SEMANTIC_FOCUS_FALLBACK_MIN_TOKEN_LEN", "4"))
         self.model_id = os.getenv("LANGEXTRACT_MODEL_ID", "llama3.2:3b")
         self.model_url = os.getenv("LANGEXTRACT_MODEL_URL", "http://ollama:11434")
         self.last_error: str | None = None
+        self.stop_words = {
+            "de",
+            "la",
+            "el",
+            "en",
+            "y",
+            "a",
+            "que",
+            "los",
+            "las",
+            "un",
+            "una",
+            "por",
+            "para",
+            "con",
+            "del",
+            "the",
+            "and",
+            "for",
+            "with",
+            "this",
+            "that",
+            "from",
+            "como",
+            "sobre",
+            "entre",
+            "desde",
+            "hasta",
+            "esta",
+            "este",
+            "estos",
+            "estas",
+            "pero",
+            "porque",
+        }
 
         self.prompt_description = (
             "Reescribe el texto en una descripción corta y enriquecida semánticamente que preserve el tema principal "
@@ -229,6 +266,40 @@ class SemanticFocusService:
         ]
 
         return self._shorten(self._clean(" | ".join(part for part in parts if part)))
+
+    def build_keyword_fallback_views(self, text: str, content_type: str) -> dict[str, Any]:
+        cleaned_text = self._clean(text)
+        if not cleaned_text:
+            return {}
+
+        keywords = self._extract_keywords_by_frequency(cleaned_text)
+        topic = keywords[0] if keywords else self._shorten(cleaned_text)
+        summary = self._shorten(cleaned_text)
+        domain = content_type.strip() if content_type else "general"
+
+        expanded_parts = [part for part in [topic, domain, summary] if part]
+        expanded_context = self._shorten(self._clean(". ".join(expanded_parts)))
+
+        return {
+            "topic": self._shorten(topic),
+            "domain": self._shorten(domain),
+            "summary": summary,
+            "keywords": keywords,
+            "intent": "",
+            "expanded_context": expanded_context,
+        }
+
+    def _extract_keywords_by_frequency(self, text: str) -> list[str]:
+        token_pattern = rf"[a-záéíóúñü0-9]{{{self.fallback_min_token_len},}}"
+        tokens = re.findall(token_pattern, text.lower())
+        filtered_tokens = [token for token in tokens if token not in self.stop_words and not token.isdigit()]
+
+        if not filtered_tokens:
+            return []
+
+        frequencies = Counter(filtered_tokens)
+        ranked_tokens = [token for token, _ in frequencies.most_common(self.max_keywords)]
+        return ranked_tokens
 
     def _shorten(self, text: str) -> str:
         cleaned_text = self._clean(text)
