@@ -14,3 +14,4 @@ pypdf
 qrcode
 qrcode_terminal
 psutil
+python-docx

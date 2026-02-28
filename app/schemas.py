@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class IngestRequest(BaseModel):
-    input: str
+    input: str | list[str]
 
 
 class IngestResponse(BaseModel):
@@ -13,6 +13,27 @@ class IngestResponse(BaseModel):
     type: str
     cluster_id: int
     similarity_score: float | None
+
+
+class BulkIngestRequest(BaseModel):
+    inputs: list[str]
+    continue_on_error: bool = True
+
+
+class BulkIngestItemResult(BaseModel):
+    index: int
+    input: str
+    success: bool
+    result: IngestResponse | None = None
+    error: str | None = None
+
+
+class BulkIngestResponse(BaseModel):
+    total: int
+    processed: int
+    succeeded: int
+    failed: int
+    results: list[BulkIngestItemResult]
 
 
 class ItemResponse(BaseModel):

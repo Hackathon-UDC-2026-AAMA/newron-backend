@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -23,10 +23,11 @@ from app.database import Base, engine, get_db
 from app.embedding_service import EmbeddingService
 from app.file_storage_service import ensure_storage_dir, save_uploaded_file
 from app.file_text_service import (
-    build_index_text_for_clustering,
+    build_file_embedding_seed,
     build_semantic_views_for_file,
     extract_text_from_file,
     extract_title_from_file,
+    SUPPORTED_FILE_EXTENSIONS,
 )
 from app.llm_category_service import LlmCategoryService
 from app.models import Cluster, ContentItem
@@ -34,6 +35,9 @@ from app.normalizer import normalize_content
 from app.semantic_focus_service import SemanticFocusService
 from app.stt_service import transcribe_audio
 from app.schemas import (
+    BulkIngestItemResult,
+    BulkIngestRequest,
+    BulkIngestResponse,
     ClusterResponse,
     HealthResponse,
     IngestRequest,
@@ -132,9 +136,63 @@ def startup() -> None:
     print("\nScan this QR with your Expo app\n")
 
 
-@app.post("/ingest", response_model=IngestResponse)
-def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestResponse:
+@app.post("/ingest", response_model=IngestResponse | BulkIngestResponse)
+def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestResponse | BulkIngestResponse:
+    if isinstance(payload.input, list):
+        return _ingest_bulk(
+            BulkIngestRequest(inputs=payload.input, continue_on_error=True),
+            db,
+        )
     return _ingest_input(payload.input, db)
+
+
+def _ingest_bulk(payload: BulkIngestRequest, db: Session) -> BulkIngestResponse:
+    max_bulk_items = int(os.getenv("BULK_INGEST_MAX_ITEMS", "100"))
+    if not payload.inputs:
+        raise HTTPException(status_code=400, detail="inputs must not be empty")
+    if len(payload.inputs) > max_bulk_items:
+        raise HTTPException(status_code=400, detail=f"Bulk size exceeds limit ({max_bulk_items})")
+
+    results: list[BulkIngestItemResult] = []
+    succeeded = 0
+    failed = 0
+    processed = 0
+
+    for index, input_value in enumerate(payload.inputs):
+        try:
+            ingest_result = _ingest_input(input_value, db)
+            results.append(
+                BulkIngestItemResult(
+                    index=index,
+                    input=input_value,
+                    success=True,
+                    result=ingest_result,
+                )
+            )
+            succeeded += 1
+            processed += 1
+        except HTTPException as exc:
+            failed += 1
+            processed += 1
+            error_message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            results.append(
+                BulkIngestItemResult(
+                    index=index,
+                    input=input_value,
+                    success=False,
+                    error=error_message,
+                )
+            )
+            if not payload.continue_on_error:
+                break
+
+    return BulkIngestResponse(
+        total=len(payload.inputs),
+        processed=processed,
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
 
 
 @app.post("/ingest-audio")
@@ -190,6 +248,8 @@ async def ingest_file(
     request: Request,
     file: UploadFile | None = File(None),
     document: UploadFile | None = File(None),
+    file_type: str | None = Form(None),
+    metadata: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> dict:
     uploaded_file = file or document
@@ -204,9 +264,15 @@ async def ingest_file(
             },
         )
 
-    filename = uploaded_file.filename or "document.pdf"
-    extension = f".{filename.lower().split('.')[-1]}" if "." in filename else ""
-    if extension not in {".pdf", ".txt", ".md", ".markdown"}:
+    filename = uploaded_file.filename or "document"
+    filename_extension = f".{filename.lower().split('.')[-1]}" if "." in filename else ""
+    declared_extension = _resolve_declared_file_extension(file_type=file_type, metadata_raw=metadata)
+
+    if (file_type or metadata) and not declared_extension:
+        raise HTTPException(status_code=400, detail="Tipo de archivo declarado no soportado")
+
+    extension = declared_extension or filename_extension
+    if extension not in SUPPORTED_FILE_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Formato de archivo no soportado")
 
     file_bytes = await uploaded_file.read()
@@ -225,13 +291,11 @@ async def ingest_file(
 
     file_title = extract_title_from_file(file_bytes, extension, filename)
 
-    index_text = build_index_text_for_clustering(extracted_text, title=file_title)
-    if not index_text:
-        raise HTTPException(status_code=400, detail="No se pudo preparar texto indexable del archivo")
-
-    is_pdf = extension == ".pdf"
-    file_semantic_views = build_semantic_views_for_file(extracted_text, file_title) if is_pdf else {}
-    file_semantic_focus = semantic_focus_service.compose_focus_text(file_semantic_views) if is_pdf else None
+    file_semantic_views = build_semantic_views_for_file(extracted_text, file_title)
+    file_semantic_focus = semantic_focus_service.compose_focus_text(file_semantic_views)
+    file_embedding_seed = build_file_embedding_seed(file_semantic_views, file_title)
+    if not file_embedding_seed:
+        raise HTTPException(status_code=400, detail="No se pudo preparar representación semántica del archivo")
 
     metadata_overrides = {
         "file_id": storage_info["file_id"],
@@ -239,24 +303,25 @@ async def ingest_file(
         "file_storage_path": storage_info["stored_path"],
         "file_size_bytes": storage_info["file_size_bytes"],
         "file_title": file_title,
+        "declared_file_type": file_type,
         "extracted_chars": len(extracted_text),
-        "index_chars": len(index_text),
+        "index_chars": len(file_embedding_seed),
         "preview_text": extracted_text[:8000],
-        "pdf_semantic_envelope": is_pdf,
+        "deterministic_file_envelope": True,
+        "file_extension": extension,
     }
 
     ingest_kwargs = {
-        "raw_input": index_text,
+        "raw_input": file_embedding_seed,
         "db": db,
         "content_type_override": "file",
         "use_semantic_focus": False,
         "original_input_override": f"[FILE] {file_title}",
         "metadata_overrides": metadata_overrides,
     }
-    if is_pdf:
-        ingest_kwargs["semantic_focus_views_override"] = file_semantic_views
-        ingest_kwargs["semantic_focus_override"] = file_semantic_focus
-        ingest_kwargs["semantic_focus_source_override"] = "deterministic_file_envelope"
+    ingest_kwargs["semantic_focus_views_override"] = file_semantic_views
+    ingest_kwargs["semantic_focus_override"] = file_semantic_focus
+    ingest_kwargs["semantic_focus_source_override"] = "deterministic_file_envelope"
 
     result = _ingest_input(
         **ingest_kwargs,
@@ -267,7 +332,7 @@ async def ingest_file(
         "file_title": file_title,
         "file_id": storage_info["file_id"],
         "extracted_chars": len(extracted_text),
-        "index_chars": len(index_text),
+        "index_chars": len(file_embedding_seed),
         "result": {
             "id": result.id,
             "type": result.type,
@@ -409,6 +474,12 @@ def get_item_file(item_id: int, db: Session = Depends(get_db)) -> FileResponse:
         ".txt": "text/plain",
         ".md": "text/markdown",
         ".markdown": "text/markdown",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".csv": "text/csv",
+        ".json": "application/json",
+        ".html": "text/html",
+        ".htm": "text/html",
+        ".rtf": "application/rtf",
     }.get(extension, "application/octet-stream")
 
     return FileResponse(path=stored_path, filename=filename, media_type=media_type)
@@ -543,6 +614,74 @@ def _extract_canonical_url(raw_input: str, content_type: str) -> str | None:
         return extract_first_youtube_url(raw_input)
     if content_type == "link":
         return extract_first_link_url(raw_input)
+    return None
+
+
+def _resolve_declared_file_extension(file_type: str | None, metadata_raw: str | None) -> str | None:
+    candidates: list[str] = []
+    if file_type and file_type.strip():
+        candidates.append(file_type.strip())
+
+    metadata_candidate = _extract_file_type_from_metadata(metadata_raw)
+    if metadata_candidate:
+        candidates.append(metadata_candidate)
+
+    for candidate in candidates:
+        resolved = _normalize_file_type_to_extension(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def _extract_file_type_from_metadata(metadata_raw: str | None) -> str | None:
+    if not metadata_raw or not metadata_raw.strip():
+        return None
+
+    raw = metadata_raw.strip()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return raw
+
+    if isinstance(parsed, str):
+        return parsed
+    if not isinstance(parsed, dict):
+        return None
+
+    for key in ["file_type", "type", "mime_type", "content_type", "extension", "ext"]:
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _normalize_file_type_to_extension(value: str) -> str | None:
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+
+    if normalized.startswith("."):
+        extension = normalized
+    elif "/" in normalized:
+        mime_map = {
+            "application/pdf": ".pdf",
+            "text/plain": ".txt",
+            "text/markdown": ".md",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+            "text/csv": ".csv",
+            "application/json": ".json",
+            "text/html": ".html",
+            "application/rtf": ".rtf",
+            "text/rtf": ".rtf",
+        }
+        extension = mime_map.get(normalized)
+        if extension is None:
+            return None
+    else:
+        extension = f".{normalized}"
+
+    if extension in SUPPORTED_FILE_EXTENSIONS:
+        return extension
     return None
 
 

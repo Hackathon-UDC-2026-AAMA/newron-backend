@@ -11,6 +11,7 @@ class ClusteringService:
         env_threshold = os.getenv("SIMILARITY_THRESHOLD")
         self.threshold = threshold if threshold is not None else float(env_threshold or 0.75)
         self.text_threshold = float(os.getenv("TEXT_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_TEXT", 0.45)))
+        self.file_threshold = float(os.getenv("FILE_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_FILE", 0.72)))
         self.youtube_threshold = float(os.getenv("YOUTUBE_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_YOUTUBE", 0.62)))
         self.link_threshold = float(os.getenv("LINK_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_LINK", 0.55)))
 
@@ -22,8 +23,10 @@ class ClusteringService:
             db.flush()
             return new_cluster, 0.0, True
 
-        if content_type in {"text", "audio", "file"}:
+        if content_type in {"text", "audio"}:
             threshold_to_use = self.text_threshold
+        elif content_type == "file":
+            threshold_to_use = self.file_threshold
         elif content_type == "youtube":
             threshold_to_use = self.youtube_threshold
         elif content_type == "link":
