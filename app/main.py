@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,7 @@ from app.database import Base, engine, get_db
 from app.embedding_service import EmbeddingService
 from app.models import Cluster, ContentItem
 from app.normalizer import normalize_content
+from app.stt_service import transcribe_audio
 from app.schemas import (
     ClusterResponse,
     HealthResponse,
@@ -36,11 +37,63 @@ def startup() -> None:
 
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestResponse:
-    if not payload.input.strip():
+    return _ingest_input(payload.input, db)
+
+
+@app.post("/ingest-audio")
+async def ingest_audio(
+    request: Request,
+    file: UploadFile | None = File(None),
+    audio: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+) -> dict:
+    uploaded_file = file or audio
+    if uploaded_file is None:
+        form = await request.form()
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "No se recibió archivo. Usa multipart/form-data con key 'file' o 'audio'.",
+                "content_type": request.headers.get("content-type", ""),
+                "received_form_keys": list(form.keys()),
+            },
+        )
+
+    filename = uploaded_file.filename or "audio.m4a"
+    extension = f".{filename.lower().split('.')[-1]}" if "." in filename else ""
+
+    if extension not in {".m4a", ".mp3", ".wav"}:
+        raise HTTPException(status_code=400, detail="Formato de audio no soportado")
+
+    audio_bytes = await uploaded_file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio vacío")
+
+    transcribed_text = transcribe_audio(audio_bytes, suffix=extension)
+    if not transcribed_text:
+        raise HTTPException(status_code=400, detail="No se pudo extraer texto del audio")
+
+    result = _ingest_input(transcribed_text, db, content_type_override="audio")
+
+    return {
+        "filename": filename,
+        "transcription": transcribed_text,
+        "result": {
+            "id": result.id,
+            "type": result.type,
+            "cluster_id": result.cluster_id,
+            "similarity_score": result.similarity_score,
+        },
+        "status": "processed",
+    }
+
+
+def _ingest_input(raw_input: str, db: Session, content_type_override: str | None = None) -> IngestResponse:
+    if not raw_input.strip():
         raise HTTPException(status_code=400, detail="Input cannot be empty")
 
-    content_type = classify_input(payload.input)
-    canonical_url = _extract_canonical_url(payload.input, content_type)
+    content_type = content_type_override or classify_input(raw_input)
+    canonical_url = _extract_canonical_url(raw_input, content_type)
     if canonical_url is not None:
         existing_item = (
             db.query(ContentItem)
@@ -59,13 +112,13 @@ def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestRespo
                 similarity_score=existing_item.similarity_score,
             )
 
-    normalized_text, metadata = normalize_content(payload.input, content_type)
+    normalized_text, metadata = normalize_content(raw_input, content_type)
     embedding = embedding_service.generate_embedding(normalized_text)
 
     cluster, similarity, is_new_cluster = clustering_service.assign_cluster(db, embedding, content_type)
 
     item = ContentItem(
-        original_input=payload.input,
+        original_input=raw_input,
         type=content_type,
         normalized_text=normalized_text,
         metadata_json=metadata,

@@ -3,7 +3,9 @@ uvicorn[standard]==0.35.0
 sqlalchemy==2.0.43
 psycopg2-binary==2.9.10
 sentence-transformers==5.1.0
-numpy==2.3.2
+numpy==2.2.6
 scikit-learn==1.8.0
 yt-dlp[default]
 trafilatura
+faster-whisper
+python-multipart
