@@ -1,6 +1,13 @@
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import secrets
+from datetime import datetime, timedelta
+from io import BytesIO
+import socket
+import qrcode
+from fastapi.responses import StreamingResponse
+import qrcode_terminal
 
 from app.classifier import classify_input, extract_first_link_url, extract_first_youtube_url
 from app.cluster_label_service import ClusterLabelService
@@ -26,12 +33,78 @@ embedding_service = EmbeddingService()
 clustering_service = ClusteringService()
 cluster_label_service = ClusterLabelService()
 
+QR_TOKEN = None
+QR_EXPIRATION = None
+AUTHORIZED_DEVICES = set()
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    finally:
+        s.close()
+    return ip
+
+
+@app.get("/qr")
+def get_qr():
+    ip = get_local_ip()
+    url = f"http://{ip}:8000/connect?token={QR_TOKEN}"
+
+    img = qrcode.make(url)
+
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    return StreamingResponse(buffer, media_type="image/png")
+
+@app.middleware("http")
+async def auth(request, call_next):
+    device = request.headers.get("X-Device-ID")
+
+    if device not in AUTHORIZED_DEVICES:
+        raise HTTPException(403)
+
+    return await call_next(request)
+
+@app.post("/pair")
+def pair(secret: str, device_id: str):
+    global PAIRED
+
+    if PAIRED:
+        raise HTTPException(403, "Already paired")
+
+    if secret != QR_TOKEN:
+        raise HTTPException(403, "Invalid")
+
+    AUTHORIZED_DEVICES.add(device_id)
+    PAIRED = True
+
+    return {"status": "paired"}
 
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE clusters ADD COLUMN IF NOT EXISTS cluster_label VARCHAR(255)"))
+
+    global QR_TOKEN, QR_EXPIRATION
+
+    QR_TOKEN = secrets.token_urlsafe(32)
+    QR_EXPIRATION = datetime.utcnow() + timedelta(minutes=5)
+
+    print("\n========== QR LOGIN ==========")
+    print("Open http://localhost:8000/qr")
+    print("==============================\n")
+
+    ip = get_local_ip()
+    url = f"http://{ip}:8000/pair?secret={QR_TOKEN}"
+
+    print("\n=== PAIR YOUR MOBILE ===\n")
+    qrcode_terminal.draw(url)
+    print("\nScan this QR with your Expo app\n")
 
 
 @app.post("/ingest", response_model=IngestResponse)
@@ -113,7 +186,6 @@ def purge_data(db: Session = Depends(get_db)) -> PurgeResponse:
     deleted_clusters = db.query(Cluster).delete(synchronize_session=False)
     db.commit()
     return PurgeResponse(deleted_items=deleted_items, deleted_clusters=deleted_clusters)
-
 
 @app.post("/items/{item_id}/move-cluster", response_model=MoveItemClusterResponse)
 def move_item_cluster(item_id: int, payload: MoveItemClusterRequest, db: Session = Depends(get_db)) -> MoveItemClusterResponse:
