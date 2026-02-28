@@ -22,7 +22,7 @@ class ClusteringService:
             db.flush()
             return new_cluster, 0.0, True
 
-        if content_type in {"text", "audio"}:
+        if content_type in {"text", "audio", "file"}:
             threshold_to_use = self.text_threshold
         elif content_type == "youtube":
             threshold_to_use = self.youtube_threshold

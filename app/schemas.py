@@ -62,3 +62,11 @@ class MoveItemClusterResponse(BaseModel):
     old_cluster_deleted: bool
     old_cluster_size: int | None
     new_cluster_size: int
+
+
+class ItemContentResponse(BaseModel):
+    item_id: int
+    type: str
+    title: str | None = None
+    content: str
+    download_url: str | None = None

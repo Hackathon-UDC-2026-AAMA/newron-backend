@@ -10,3 +10,4 @@ trafilatura
 faster-whisper
 python-multipart
 langextract
+pypdf

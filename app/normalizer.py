@@ -12,7 +12,7 @@ from app.classifier import extract_first_link_url, extract_first_youtube_url
 def normalize_content(raw_input: str, content_type: str) -> tuple[str, dict]:
     clean_input = raw_input.strip()
 
-    if content_type in {"text", "audio"}:
+    if content_type in {"text", "audio", "file"}:
         metadata = {"source": content_type, "length": len(clean_input)}
         return _prepare_for_embedding(clean_input), metadata
 

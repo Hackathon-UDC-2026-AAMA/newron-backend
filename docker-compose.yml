@@ -36,6 +36,7 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./uploads:/app/uploads
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       DB_USER: ${DB_USER}
@@ -58,6 +59,8 @@ services:
       CATEGORY_NAME_LLM_TIMEOUT: ${CATEGORY_NAME_LLM_TIMEOUT}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
       SEMANTIC_FOCUS_MAX_CHARS: ${SEMANTIC_FOCUS_MAX_CHARS}
+      FILE_STORAGE_DIR: ${FILE_STORAGE_DIR}
+      FILE_TITLE_WEIGHT: ${FILE_TITLE_WEIGHT}
     ports:
       - "8000:8000"
 
