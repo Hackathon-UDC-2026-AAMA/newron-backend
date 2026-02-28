@@ -37,6 +37,7 @@ def startup() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE clusters ADD COLUMN IF NOT EXISTS cluster_label VARCHAR(255)"))
+        connection.execute(text("ALTER TABLE clusters ADD COLUMN IF NOT EXISTS cluster_description VARCHAR(400)"))
         connection.execute(text("ALTER TABLE clusters ADD COLUMN IF NOT EXISTS cluster_keywords JSONB"))
         connection.execute(text("UPDATE clusters SET cluster_keywords = '[]'::jsonb WHERE cluster_keywords IS NULL"))
 
@@ -156,11 +157,7 @@ def _ingest_input(raw_input: str, db: Session, content_type_override: str | None
     db.add(item)
     db.flush()
 
-    if is_new_cluster and not cluster.cluster_label:
-        cluster_texts = [row[0] for row in db.query(ContentItem.normalized_text).filter(ContentItem.cluster_id == cluster.id).all()]
-        cluster_label, cluster_keywords = _build_cluster_label(cluster_texts)
-        cluster.cluster_label = cluster_label
-        cluster.cluster_keywords = cluster_keywords
+    _recompute_cluster_state(db, cluster.id)
 
     db.commit()
     db.refresh(item)
@@ -260,17 +257,18 @@ def _recompute_cluster_state(db: Session, cluster_id: int) -> tuple[bool, int | 
 
     cluster.size = len(cluster_items)
     cluster.centroid = _average_embeddings([item.embedding for item in cluster_items])
-    cluster_label, cluster_keywords = _build_cluster_label([item.normalized_text for item in cluster_items])
+    cluster_label, cluster_description, cluster_keywords = _build_cluster_label([item.normalized_text for item in cluster_items])
     cluster.cluster_label = cluster_label
+    cluster.cluster_description = cluster_description
     cluster.cluster_keywords = cluster_keywords
     db.flush()
     return False, cluster.size
 
 
-def _build_cluster_label(cluster_texts: list[str]) -> tuple[str, list[str]]:
+def _build_cluster_label(cluster_texts: list[str]) -> tuple[str, str | None, list[str]]:
     tfidf_label, tfidf_keywords = cluster_label_service.build_label(cluster_texts)
-    llm_label = llm_category_service.generate_name(tfidf_keywords, cluster_texts, fallback_label=tfidf_label)
-    return llm_label, tfidf_keywords
+    llm_label, llm_description = llm_category_service.generate_category(tfidf_keywords, cluster_texts, fallback_label=tfidf_label)
+    return llm_label, llm_description, tfidf_keywords
 
 
 def _average_embeddings(embeddings: list[list[float]]) -> list[float]:

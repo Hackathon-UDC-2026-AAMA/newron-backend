@@ -35,6 +35,7 @@ class ClusterResponse(BaseModel):
 
     id: int
     cluster_label: str | None
+    cluster_description: str | None = None
     cluster_keywords: list[str] = Field(default_factory=list)
     size: int
     centroid: list[float]
