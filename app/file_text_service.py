@@ -13,7 +13,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 
 
 MAX_EXTRACTED_CHARS = 50000
-DEFAULT_FILE_TITLE_WEIGHT = int(os.getenv("FILE_TITLE_WEIGHT", "4"))
 DEFAULT_FILE_SEMANTIC_KEYWORDS = int(os.getenv("FILE_SEMANTIC_KEYWORDS_MAX", "14"))
 SUPPORTED_FILE_EXTENSIONS = {
     ".pdf",
@@ -264,39 +263,6 @@ def _clean_limit(text: str) -> str:
     without_nul = text.replace("\x00", " ")
     normalized = " ".join(without_nul.split())
     return normalized[:MAX_EXTRACTED_CHARS].strip()
-
-
-def build_index_text_for_clustering(
-    text: str,
-    title: str | None = None,
-    title_weight: int = DEFAULT_FILE_TITLE_WEIGHT,
-    chunk_words: int = 280,
-    max_chunks: int = 8,
-) -> str:
-    words = text.split()
-    if not words:
-        return ""
-
-    chunks: list[str] = []
-    start = 0
-    while start < len(words) and len(chunks) < max_chunks:
-        end = min(start + chunk_words, len(words))
-        chunks.append(" ".join(words[start:end]))
-        start = end
-
-    sampled_chunks: list[str] = []
-    for chunk in chunks:
-        sampled_chunks.append(" ".join(chunk.split()[:90]))
-
-    body = "\n\n".join(sampled_chunks).strip()
-    clean_title = _clean_title(title or "")
-
-    if not clean_title:
-        return body
-
-    safe_weight = max(1, min(int(title_weight), 12))
-    weighted_title = "\n".join([clean_title] * safe_weight)
-    return f"{weighted_title}\n\n{body}".strip()
 
 
 def _title_from_filename(filename: str) -> str:

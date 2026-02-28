@@ -7,14 +7,11 @@ from sqlalchemy.orm import Session
 import secrets
 from datetime import datetime, timedelta
 from io import BytesIO
-import socket
 import qrcode
 from fastapi.responses import StreamingResponse
 import qrcode_terminal
 import json
 import re
-from fastapi import Request
-import psutil
 import os
 
 from app.classifier import classify_input, extract_all_link_urls, extract_first_link_url, extract_first_youtube_url

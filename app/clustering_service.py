@@ -1,10 +1,11 @@
 import math
 import os
 import re
+from collections import defaultdict
 
 from sqlalchemy.orm import Session
 
-from app.models import Cluster
+from app.models import Cluster, ContentItem
 
 
 class ClusteringService:
@@ -22,6 +23,11 @@ class ClusteringService:
         self.text_theme_min_overlap = int(os.getenv("TEXT_THEME_MIN_OVERLAP", "1"))
         self.text_theme_high_similarity_override = float(os.getenv("TEXT_THEME_HIGH_SIMILARITY_OVERRIDE", "0.78"))
         self.text_theme_min_cluster_size = int(os.getenv("TEXT_THEME_MIN_CLUSTER_SIZE", "3"))
+        self.adaptive_min_cluster_size = 3
+        self.adaptive_sigma_factor = 1.0
+        self.adaptive_global_min_threshold = 0.65
+        self.adaptive_recalc_every = 5
+        self._adaptive_threshold_cache: dict[int, tuple[int, float]] = {}
 
     def assign_cluster(
         self,
@@ -52,6 +58,7 @@ class ClusteringService:
         best_cluster = None
         best_similarity = -1.0
         best_global_similarity = -1.0
+        cluster_item_embeddings = self._load_cluster_item_embeddings(db, clusters)
 
         for cluster in clusters:
             similarity = cosine_similarity(embedding, cluster.centroid)
@@ -68,19 +75,21 @@ class ClusteringService:
                 continue
 
             if similarity > best_similarity:
-                best_similarity = similarity
-                best_cluster = cluster
+                dynamic_threshold = self._resolve_threshold_for_cluster(
+                    cluster=cluster,
+                    threshold_to_use=threshold_to_use,
+                    content_type=content_type,
+                    cluster_item_embeddings=cluster_item_embeddings,
+                )
+                if similarity > dynamic_threshold:
+                    best_similarity = similarity
+                    best_cluster = cluster
 
         if best_cluster is not None:
-            effective_threshold = threshold_to_use
-            if content_type in {"text", "audio"} and best_cluster.size <= 1:
-                effective_threshold = self.text_threshold_cold_start
-
-            if best_similarity > effective_threshold:
-                best_cluster.centroid = update_centroid(best_cluster.centroid, best_cluster.size, embedding)
-                best_cluster.size += 1
-                db.flush()
-                return best_cluster, best_similarity, False
+            best_cluster.centroid = update_centroid(best_cluster.centroid, best_cluster.size, embedding)
+            best_cluster.size += 1
+            db.flush()
+            return best_cluster, best_similarity, False
 
         new_cluster = Cluster(centroid=embedding, size=1)
         db.add(new_cluster)
@@ -126,6 +135,58 @@ class ClusteringService:
             for token in re.findall(r"[a-záéíóúñü]{4,}", str(value).lower()):
                 normalized.add(token)
         return normalized
+
+    def _load_cluster_item_embeddings(self, db: Session, clusters: list[Cluster]) -> dict[int, list[list[float]]]:
+        if not clusters:
+            return {}
+
+        cluster_ids = [cluster.id for cluster in clusters]
+        rows = db.query(ContentItem.cluster_id, ContentItem.embedding).filter(ContentItem.cluster_id.in_(cluster_ids)).all()
+
+        grouped: dict[int, list[list[float]]] = defaultdict(list)
+        for cluster_id, item_embedding in rows:
+            if item_embedding:
+                grouped[int(cluster_id)].append(item_embedding)
+        return grouped
+
+    def _resolve_threshold_for_cluster(
+        self,
+        cluster: Cluster,
+        threshold_to_use: float,
+        content_type: str | None,
+        cluster_item_embeddings: dict[int, list[list[float]]],
+    ) -> float:
+        static_threshold = threshold_to_use
+        if content_type in {"text", "audio"} and cluster.size <= 1:
+            static_threshold = self.text_threshold_cold_start
+
+        if cluster.size < self.adaptive_min_cluster_size:
+            return static_threshold
+
+        cached = self._adaptive_threshold_cache.get(cluster.id)
+        if cached is not None:
+            cached_size, cached_threshold = cached
+            if cluster.size % self.adaptive_recalc_every != 0 and cached_size <= cluster.size:
+                return max(self.adaptive_global_min_threshold, cached_threshold)
+
+        item_embeddings = cluster_item_embeddings.get(cluster.id, [])
+        if len(item_embeddings) < self.adaptive_min_cluster_size:
+            return static_threshold
+
+        similarities = [cosine_similarity(item_embedding, cluster.centroid) for item_embedding in item_embeddings]
+        if not similarities:
+            return static_threshold
+
+        dynamic_threshold = self._compute_dynamic_threshold(similarities)
+        bounded_threshold = max(self.adaptive_global_min_threshold, dynamic_threshold)
+        self._adaptive_threshold_cache[cluster.id] = (cluster.size, bounded_threshold)
+        return bounded_threshold
+
+    def _compute_dynamic_threshold(self, similarities: list[float]) -> float:
+        mu = sum(similarities) / len(similarities)
+        variance = sum((value - mu) ** 2 for value in similarities) / len(similarities)
+        sigma = math.sqrt(max(variance, 0.0))
+        return mu - (self.adaptive_sigma_factor * sigma)
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
