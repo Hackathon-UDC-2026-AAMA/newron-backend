@@ -11,6 +11,8 @@ class ClusteringService:
         env_threshold = os.getenv("SIMILARITY_THRESHOLD")
         self.threshold = threshold if threshold is not None else float(env_threshold or 0.75)
         self.text_threshold = float(os.getenv("TEXT_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_TEXT", 0.45)))
+        self.youtube_threshold = float(os.getenv("YOUTUBE_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_YOUTUBE", 0.62)))
+        self.link_threshold = float(os.getenv("LINK_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_LINK", 0.55)))
 
     def assign_cluster(self, db: Session, embedding: list[float], content_type: str | None = None) -> tuple[Cluster, float, bool]:
         clusters = db.query(Cluster).all()
@@ -20,7 +22,14 @@ class ClusteringService:
             db.flush()
             return new_cluster, 0.0, True
 
-        threshold_to_use = self.text_threshold if content_type == "text" else self.threshold
+        if content_type == "text":
+            threshold_to_use = self.text_threshold
+        elif content_type == "youtube":
+            threshold_to_use = self.youtube_threshold
+        elif content_type == "link":
+            threshold_to_use = self.link_threshold
+        else:
+            threshold_to_use = self.threshold
 
         best_cluster = None
         best_similarity = -1.0
