@@ -28,6 +28,24 @@ def extract_first_link_url(raw_input: str) -> str | None:
     return normalize_url(_clean_url_token(match.group(0)))
 
 
+def extract_all_link_urls(raw_input: str) -> list[str]:
+    matches = LINK_REGEX.finditer(raw_input)
+    normalized_urls: list[str] = []
+    seen: set[str] = set()
+
+    for match in matches:
+        raw_url = _clean_url_token(match.group(0))
+        if not raw_url:
+            continue
+        normalized = normalize_url(raw_url)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_urls.append(normalized)
+
+    return normalized_urls
+
+
 def _clean_url_token(url: str) -> str:
     return url.rstrip(".,;:!?)\"]}'")
 

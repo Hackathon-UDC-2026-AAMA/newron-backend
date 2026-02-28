@@ -59,10 +59,6 @@ def ollama_model_exists(base_url: str, model_id: str, timeout_seconds: int) -> b
 
 
 def warmup_ollama_models() -> None:
-    if not _env_flag("WARMUP_OLLAMA_MODELS", True):
-        print("[warmup] Ollama warmup disabled")
-        return
-
     base_url = os.getenv("OLLAMA_BASE_URL", os.getenv("LANGEXTRACT_MODEL_URL", "http://ollama:11434"))
     timeout_seconds = int(os.getenv("OLLAMA_PULL_TIMEOUT_SECONDS", "240"))
 
@@ -90,11 +86,7 @@ def warmup_ollama_models() -> None:
 
 
 def main() -> None:
-    if _env_flag("WARMUP_EMBEDDING_MODEL", True):
-        warmup_embedding_model()
-    else:
-        print("[warmup] Embedding warmup disabled")
-
+    warmup_embedding_model()
     warmup_ollama_models()
 
 

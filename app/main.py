@@ -16,7 +16,7 @@ from fastapi import Request
 import psutil
 import os
 
-from app.classifier import classify_input, extract_first_link_url, extract_first_youtube_url
+from app.classifier import classify_input, extract_all_link_urls, extract_first_link_url, extract_first_youtube_url
 from app.cluster_label_service import ClusterLabelService
 from app.clustering_service import ClusteringService
 from app.database import Base, engine, get_db
@@ -78,6 +78,10 @@ llm_category_service = LlmCategoryService()
 QR_TOKEN = None
 QR_EXPIRATION = None
 PAIRED = False
+AUDIO_FILE_EXTENSIONS = {".m4a", ".mp3", ".wav"}
+TEXT_FILE_FANOUT_EXTENSIONS = {".txt", ".md", ".markdown"}
+FILE_LINK_FANOUT_ENABLED = True
+FILE_LINK_FANOUT_MIN_LINKS = 2
 
 def get_server_ip():
     # Intenta leer la IP que le pasamos desde afuera
@@ -306,7 +310,7 @@ async def ingest_file(
         raise HTTPException(status_code=400, detail="Tipo de archivo declarado no soportado")
 
     extension = declared_extension or filename_extension
-    if extension not in SUPPORTED_FILE_EXTENSIONS:
+    if extension not in SUPPORTED_FILE_EXTENSIONS and extension not in AUDIO_FILE_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Formato de archivo no soportado")
 
     file_bytes = await uploaded_file.read()
@@ -315,6 +319,45 @@ async def ingest_file(
 
     storage_info = save_uploaded_file(file_bytes, filename)
 
+    if extension in AUDIO_FILE_EXTENSIONS:
+        transcribed_text = transcribe_audio(file_bytes, suffix=extension)
+        if not transcribed_text:
+            raise HTTPException(status_code=400, detail="No se pudo extraer texto del audio")
+
+        metadata_overrides = {
+            "file_id": storage_info["file_id"],
+            "file_name": storage_info["original_filename"],
+            "file_storage_path": storage_info["stored_path"],
+            "file_size_bytes": storage_info["file_size_bytes"],
+            "declared_file_type": file_type,
+            "file_extension": extension,
+            "ingest_mode": "audio_file",
+            "transcription_chars": len(transcribed_text),
+        }
+
+        result = _ingest_input(
+            transcribed_text,
+            db,
+            content_type_override="audio",
+            original_input_override=f"[AUDIO_FILE] {filename}",
+            metadata_overrides=metadata_overrides,
+        )
+
+        return {
+            "filename": filename,
+            "file_id": storage_info["file_id"],
+            "file_extension": extension,
+            "ingest_mode": "audio_file",
+            "transcription_chars": len(transcribed_text),
+            "result": {
+                "id": result.id,
+                "type": result.type,
+                "cluster_id": result.cluster_id,
+                "similarity_score": result.similarity_score,
+            },
+            "status": "processed",
+        }
+
     try:
         extracted_text = extract_text_from_file(file_bytes, extension)
     except ValueError as exc:
@@ -322,6 +365,20 @@ async def ingest_file(
 
     if not extracted_text:
         raise HTTPException(status_code=400, detail="No se pudo extraer texto del archivo")
+
+    if FILE_LINK_FANOUT_ENABLED and extension in TEXT_FILE_FANOUT_EXTENSIONS:
+        extracted_urls = extract_all_link_urls(extracted_text)
+        if len(extracted_urls) >= FILE_LINK_FANOUT_MIN_LINKS:
+            bulk_result = _ingest_bulk(BulkIngestRequest(inputs=extracted_urls, continue_on_error=True), db)
+            return {
+                "filename": filename,
+                "file_id": storage_info["file_id"],
+                "file_extension": extension,
+                "ingest_mode": "url_fanout",
+                "detected_urls": len(extracted_urls),
+                "results": bulk_result.model_dump(),
+                "status": "processed",
+            }
 
     file_title = extract_title_from_file(file_bytes, extension, filename)
 
@@ -460,7 +517,17 @@ def _ingest_input(
 
     embedding = embedding_service.generate_embedding(embedding_text)
 
-    cluster, similarity, is_new_cluster = clustering_service.assign_cluster(db, embedding, content_type)
+    semantic_keywords = semantic_focus_views.get("keywords", []) if isinstance(semantic_focus_views, dict) else []
+    if not isinstance(semantic_keywords, list):
+        semantic_keywords = []
+
+    cluster, similarity, is_new_cluster = clustering_service.assign_cluster(
+        db,
+        embedding,
+        content_type,
+        source_text=normalized_text,
+        source_keywords=[str(keyword) for keyword in semantic_keywords],
+    )
 
     item = ContentItem(
         original_input=original_input_override or raw_input,

@@ -14,6 +14,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 
 MAX_EXTRACTED_CHARS = 50000
 DEFAULT_FILE_TITLE_WEIGHT = int(os.getenv("FILE_TITLE_WEIGHT", "4"))
+DEFAULT_FILE_SEMANTIC_KEYWORDS = int(os.getenv("FILE_SEMANTIC_KEYWORDS_MAX", "14"))
 SUPPORTED_FILE_EXTENSIONS = {
     ".pdf",
     ".txt",
@@ -258,9 +259,9 @@ def _is_generic_title(title: str) -> bool:
 def build_semantic_views_for_file(text: str, title: str) -> dict[str, object]:
     clean_title = _clean_title(title)
     summary = _build_file_summary(text)
-    keywords = _extract_keywords_tfidf(text, max_keywords=8)
+    keywords = _extract_keywords_tfidf(text, max_keywords=DEFAULT_FILE_SEMANTIC_KEYWORDS)
     if not keywords:
-        keywords = _extract_keywords_frequency(text, max_keywords=8)
+        keywords = _extract_keywords_frequency(text, max_keywords=DEFAULT_FILE_SEMANTIC_KEYWORDS)
     domain = _infer_domain_from_keywords(keywords)
     topic = clean_title or (keywords[0] if keywords else "documento")
     intent = "referencia documental"
