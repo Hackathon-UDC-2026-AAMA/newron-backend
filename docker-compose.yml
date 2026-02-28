@@ -37,6 +37,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./uploads:/app/uploads
+      - ./docs:/app/docs
     command: sh /app/app/start.sh
     environment:
       DB_USER: ${DB_USER}

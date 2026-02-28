@@ -1,0 +1,1070 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Semantic Ingestion Backend",
+    "description": "API de ingesta semántica para frontend. Permite indexar texto, enlaces, YouTube, audio y archivos; consultar clusters/items y recuperar archivos categorizados.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/qr": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Generar QR de pairing",
+        "description": "Devuelve un PNG con el QR para vincular cliente móvil.",
+        "operationId": "get_qr_qr_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pair": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Confirmar pairing",
+        "description": "Valida el token escaneado desde el QR y marca la sesión como vinculada.",
+        "operationId": "pair_pair_post",
+        "parameters": [
+          {
+            "name": "secret",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Secret"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ingest": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Ingesta unitaria o en lote",
+        "description": "Si input es string procesa un item; si input es lista procesa lote y devuelve resultados por elemento.",
+        "operationId": "ingest_ingest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IngestResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BulkIngestResponse"
+                    }
+                  ],
+                  "title": "Response Ingest Ingest Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ingest-audio": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Ingesta de audio",
+        "description": "Recibe archivo de audio, transcribe y lo indexa como contenido tipo audio.",
+        "operationId": "ingest_audio_ingest_audio_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_ingest_audio_ingest_audio_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Ingest Audio Ingest Audio Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ingest-file": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Ingesta de archivo",
+        "description": "Guarda el archivo original, extrae texto y genera embedding determinista sin LangExtract.",
+        "operationId": "ingest_file_ingest_file_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_ingest_file_ingest_file_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Ingest File Ingest File Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/items/{item_id}/file": {
+      "get": {
+        "tags": [
+          "Items"
+        ],
+        "summary": "Descargar archivo original",
+        "description": "Devuelve el archivo original asociado a un item de tipo file.",
+        "operationId": "get_item_file_items__item_id__file_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/items": {
+      "get": {
+        "tags": [
+          "Items"
+        ],
+        "summary": "Listar items",
+        "description": "Lista todos los items indexados ordenados por ID ascendente.",
+        "operationId": "get_items_items_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ItemResponse"
+                  },
+                  "type": "array",
+                  "title": "Response Get Items Items Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/clusters/{cluster_id}/items": {
+      "get": {
+        "tags": [
+          "Clusters"
+        ],
+        "summary": "Listar items de un cluster",
+        "description": "Devuelve los items pertenecientes a un cluster específico.",
+        "operationId": "get_cluster_items_clusters__cluster_id__items_get",
+        "parameters": [
+          {
+            "name": "cluster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Cluster Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ItemResponse"
+                  },
+                  "title": "Response Get Cluster Items Clusters  Cluster Id  Items Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/items/{item_id}/content": {
+      "get": {
+        "tags": [
+          "Items"
+        ],
+        "summary": "Obtener contenido para UI",
+        "description": "Devuelve texto de presentación para chat/UI; en archivos devuelve preview y URL de descarga.",
+        "operationId": "get_item_content_items__item_id__content_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemContentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/clusters": {
+      "get": {
+        "tags": [
+          "Clusters"
+        ],
+        "summary": "Listar clusters",
+        "description": "Devuelve todos los clusters con centroides y metadata de categoría.",
+        "operationId": "get_clusters_clusters_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ClusterResponse"
+                  },
+                  "type": "array",
+                  "title": "Response Get Clusters Clusters Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Health check",
+        "description": "Verifica conectividad básica con base de datos y estado del servicio.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/purge": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Purgar datos",
+        "description": "Elimina todos los items y clusters. Operación destructiva.",
+        "operationId": "purge_data_admin_purge_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/items/{item_id}/move-cluster": {
+      "post": {
+        "tags": [
+          "Clusters"
+        ],
+        "summary": "Mover item entre clusters",
+        "description": "Reasigna manualmente un item a otro cluster y recalcula ambos clusters.",
+        "operationId": "move_item_cluster_items__item_id__move_cluster_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveItemClusterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoveItemClusterResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_ingest_audio_ingest_audio_post": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "binary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "audio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "binary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio"
+          }
+        },
+        "type": "object",
+        "title": "Body_ingest_audio_ingest_audio_post"
+      },
+      "Body_ingest_file_ingest_file_post": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "binary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "binary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document"
+          },
+          "file_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Type"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "title": "Body_ingest_file_ingest_file_post"
+      },
+      "BulkIngestItemResult": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index",
+            "description": "Posición del elemento en el lote de entrada."
+          },
+          "input": {
+            "type": "string",
+            "title": "Input",
+            "description": "Valor original enviado para este elemento."
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Indica si el elemento se procesó correctamente."
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Resultado de ingesta cuando success=true."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Error de procesamiento cuando success=false."
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "input",
+          "success"
+        ],
+        "title": "BulkIngestItemResult"
+      },
+      "BulkIngestResponse": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Cantidad total recibida en el lote."
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed",
+            "description": "Cantidad realmente procesada."
+          },
+          "succeeded": {
+            "type": "integer",
+            "title": "Succeeded",
+            "description": "Cantidad de elementos procesados con éxito."
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "description": "Cantidad de elementos con error."
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/BulkIngestItemResult"
+            },
+            "type": "array",
+            "title": "Results",
+            "description": "Resultado detallado por elemento."
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "processed",
+          "succeeded",
+          "failed",
+          "results"
+        ],
+        "title": "BulkIngestResponse"
+      },
+      "ClusterResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "cluster_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster Label"
+          },
+          "cluster_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster Description"
+          },
+          "cluster_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Cluster Keywords"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "centroid": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Centroid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "cluster_label",
+          "size",
+          "centroid",
+          "created_at"
+        ],
+        "title": "ClusterResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "HealthResponse"
+      },
+      "IngestRequest": {
+        "properties": {
+          "input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Input",
+            "description": "Texto único o lista de textos/URLs para ingesta.",
+            "examples": [
+              "Nota técnica sobre embeddings y clustering",
+              [
+                "https://example.com",
+                "Resumen de reunión de producto"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "input"
+        ],
+        "title": "IngestRequest"
+      },
+      "IngestResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "ID del item guardado."
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Tipo detectado: text, link, youtube, audio o file."
+          },
+          "cluster_id": {
+            "type": "integer",
+            "title": "Cluster Id",
+            "description": "Cluster asignado al item."
+          },
+          "similarity_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity Score",
+            "description": "Similitud contra el centroide del cluster elegido."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "cluster_id"
+        ],
+        "title": "IngestResponse"
+      },
+      "ItemContentResponse": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "type",
+          "content"
+        ],
+        "title": "ItemContentResponse"
+      },
+      "ItemResponse": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "original_input": {
+            "type": "string",
+            "title": "Original Input"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "normalized_text": {
+            "type": "string",
+            "title": "Normalized Text"
+          },
+          "processed_text": {
+            "type": "string",
+            "title": "Processed Text"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "embedding": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Embedding"
+          },
+          "cluster_id": {
+            "type": "integer",
+            "title": "Cluster Id"
+          },
+          "similarity_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity Score"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "original_input",
+          "type",
+          "normalized_text",
+          "processed_text",
+          "metadata",
+          "embedding",
+          "cluster_id",
+          "similarity_score",
+          "created_at"
+        ],
+        "title": "ItemResponse"
+      },
+      "MoveItemClusterRequest": {
+        "properties": {
+          "target_cluster_id": {
+            "type": "integer",
+            "title": "Target Cluster Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "target_cluster_id"
+        ],
+        "title": "MoveItemClusterRequest"
+      },
+      "MoveItemClusterResponse": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "old_cluster_id": {
+            "type": "integer",
+            "title": "Old Cluster Id"
+          },
+          "new_cluster_id": {
+            "type": "integer",
+            "title": "New Cluster Id"
+          },
+          "old_cluster_deleted": {
+            "type": "boolean",
+            "title": "Old Cluster Deleted"
+          },
+          "old_cluster_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Cluster Size"
+          },
+          "new_cluster_size": {
+            "type": "integer",
+            "title": "New Cluster Size"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "old_cluster_id",
+          "new_cluster_id",
+          "old_cluster_deleted",
+          "old_cluster_size",
+          "new_cluster_size"
+        ],
+        "title": "MoveItemClusterResponse"
+      },
+      "PurgeResponse": {
+        "properties": {
+          "deleted_items": {
+            "type": "integer",
+            "title": "Deleted Items"
+          },
+          "deleted_clusters": {
+            "type": "integer",
+            "title": "Deleted Clusters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted_items",
+          "deleted_clusters"
+        ],
+        "title": "PurgeResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Pairing QR y sesión móvil."
+    },
+    {
+      "name": "Ingest",
+      "description": "Entrada de contenido (texto, lista, audio y archivos)."
+    },
+    {
+      "name": "Items",
+      "description": "Consulta y recuperación de items indexados."
+    },
+    {
+      "name": "Clusters",
+      "description": "Consulta de clusters y agrupaciones."
+    },
+    {
+      "name": "Admin",
+      "description": "Operaciones administrativas de mantenimiento."
+    },
+    {
+      "name": "Health",
+      "description": "Estado operativo del servicio."
+    }
+  ]
+}
