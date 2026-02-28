@@ -7,8 +7,10 @@ from app.cluster_label_service import ClusterLabelService
 from app.clustering_service import ClusteringService
 from app.database import Base, engine, get_db
 from app.embedding_service import EmbeddingService
+from app.llm_category_service import LlmCategoryService
 from app.models import Cluster, ContentItem
 from app.normalizer import normalize_content
+from app.semantic_focus_service import SemanticFocusService
 from app.stt_service import transcribe_audio
 from app.schemas import (
     ClusterResponse,
@@ -26,6 +28,8 @@ app = FastAPI(title="Semantic Ingestion Backend", version="1.0.0")
 embedding_service = EmbeddingService()
 clustering_service = ClusteringService()
 cluster_label_service = ClusterLabelService()
+semantic_focus_service = SemanticFocusService()
+llm_category_service = LlmCategoryService()
 
 
 @app.on_event("startup")
@@ -33,6 +37,8 @@ def startup() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE clusters ADD COLUMN IF NOT EXISTS cluster_label VARCHAR(255)"))
+        connection.execute(text("ALTER TABLE clusters ADD COLUMN IF NOT EXISTS cluster_keywords JSONB"))
+        connection.execute(text("UPDATE clusters SET cluster_keywords = '[]'::jsonb WHERE cluster_keywords IS NULL"))
 
 
 @app.post("/ingest", response_model=IngestResponse)
@@ -92,7 +98,13 @@ def _ingest_input(raw_input: str, db: Session, content_type_override: str | None
     if not raw_input.strip():
         raise HTTPException(status_code=400, detail="Input cannot be empty")
 
-    content_type = content_type_override or classify_input(raw_input)
+    if content_type_override is not None:
+        content_type = content_type_override
+        classification_source = "override"
+    else:
+        content_type = classify_input(raw_input)
+        classification_source = "rule-based"
+    print(f"Content classified as '{content_type}' using {classification_source} classification")
     canonical_url = _extract_canonical_url(raw_input, content_type)
     if canonical_url is not None:
         existing_item = (
@@ -111,16 +123,31 @@ def _ingest_input(raw_input: str, db: Session, content_type_override: str | None
                 cluster_id=existing_item.cluster_id,
                 similarity_score=existing_item.similarity_score,
             )
+    
+    print(f"Normalizing content for type '{content_type}'")
 
     normalized_text, metadata = normalize_content(raw_input, content_type)
-    embedding = embedding_service.generate_embedding(normalized_text)
+    metadata = dict(metadata)
+    metadata["classification_source"] = classification_source
+    print(f"Normalized text: {normalized_text}")
+    print(f"Metadata after normalization: {metadata}")
+    try:
+        semantic_focus, semantic_focus_source = semantic_focus_service.build_focus(normalized_text, content_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=f"Semantic focus LLM no disponible: {exc}") from exc
+
+    metadata["semantic_focus"] = semantic_focus
+    metadata["semantic_focus_source"] = semantic_focus_source
+    metadata.setdefault("pre_focus_text", normalized_text)
+
+    embedding = embedding_service.generate_embedding(semantic_focus)
 
     cluster, similarity, is_new_cluster = clustering_service.assign_cluster(db, embedding, content_type)
 
     item = ContentItem(
         original_input=raw_input,
         type=content_type,
-        normalized_text=normalized_text,
+        normalized_text=semantic_focus,
         metadata_json=metadata,
         embedding=embedding,
         cluster_id=cluster.id,
@@ -131,7 +158,9 @@ def _ingest_input(raw_input: str, db: Session, content_type_override: str | None
 
     if is_new_cluster and not cluster.cluster_label:
         cluster_texts = [row[0] for row in db.query(ContentItem.normalized_text).filter(ContentItem.cluster_id == cluster.id).all()]
-        cluster.cluster_label = cluster_label_service.build_label(cluster_texts)
+        cluster_label, cluster_keywords = _build_cluster_label(cluster_texts)
+        cluster.cluster_label = cluster_label
+        cluster.cluster_keywords = cluster_keywords
 
     db.commit()
     db.refresh(item)
@@ -231,9 +260,17 @@ def _recompute_cluster_state(db: Session, cluster_id: int) -> tuple[bool, int | 
 
     cluster.size = len(cluster_items)
     cluster.centroid = _average_embeddings([item.embedding for item in cluster_items])
-    cluster.cluster_label = cluster_label_service.build_label([item.normalized_text for item in cluster_items])
+    cluster_label, cluster_keywords = _build_cluster_label([item.normalized_text for item in cluster_items])
+    cluster.cluster_label = cluster_label
+    cluster.cluster_keywords = cluster_keywords
     db.flush()
     return False, cluster.size
+
+
+def _build_cluster_label(cluster_texts: list[str]) -> tuple[str, list[str]]:
+    tfidf_label, tfidf_keywords = cluster_label_service.build_label(cluster_texts)
+    llm_label = llm_category_service.generate_name(tfidf_keywords, cluster_texts, fallback_label=tfidf_label)
+    return llm_label, tfidf_keywords
 
 
 def _average_embeddings(embeddings: list[list[float]]) -> list[float]:

@@ -13,6 +13,7 @@ class Cluster(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     centroid: Mapped[list[float]] = mapped_column(ARRAY(Float), nullable=False)
     cluster_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cluster_keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

@@ -21,7 +21,8 @@ class ItemResponse(BaseModel):
     id: int
     original_input: str
     type: str
-    normalized_text: str
+    normalized_text: str = Field(validation_alias="original_input")
+    processed_text: str = Field(validation_alias="normalized_text")
     metadata: dict[str, Any] = Field(validation_alias="metadata_json")
     embedding: list[float]
     cluster_id: int
@@ -34,6 +35,7 @@ class ClusterResponse(BaseModel):
 
     id: int
     cluster_label: str | None
+    cluster_keywords: list[str] = Field(default_factory=list)
     size: int
     centroid: list[float]
     created_at: datetime

@@ -28,16 +28,16 @@ class ClusterLabelService:
             "from",
         ]
 
-    def build_label(self, texts: list[str], top_k: int = 3) -> str:
+    def build_label(self, texts: list[str], top_k: int = 3) -> tuple[str, list[str]]:
         cleaned_texts = [text.strip() for text in texts if text and text.strip()]
         if not cleaned_texts:
-            return "Unlabeled"
+            return "Unlabeled", []
 
         vectorizer = TfidfVectorizer(stop_words=self.stop_words, token_pattern=r"(?u)\b\w\w+\b")
         matrix = vectorizer.fit_transform(cleaned_texts)
 
         if matrix.shape[1] == 0:
-            return "Unlabeled"
+            return "Unlabeled", []
 
         scores = matrix.mean(axis=0).A1
         terms = vectorizer.get_feature_names_out()
@@ -45,5 +45,11 @@ class ClusterLabelService:
         top_terms = [terms[index] for index in top_indices if scores[index] > 0]
 
         if not top_terms:
-            return "Unlabeled"
-        return " / ".join(top_terms)
+            return "Unlabeled", []
+
+        primary_label = self._format_label(top_terms[0])
+        keywords = [self._format_label(term) for term in top_terms]
+        return primary_label, keywords
+
+    def _format_label(self, value: str) -> str:
+        return value.replace("_", " ").strip().title()

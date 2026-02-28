@@ -1,4 +1,12 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: newron_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
   postgres:
     image: postgres:16
     container_name: newron_postgres
@@ -22,6 +30,8 @@ services:
       dockerfile: Dockerfile
     container_name: newron_backend
     depends_on:
+      ollama:
+        condition: service_started
       postgres:
         condition: service_healthy
     volumes:
@@ -40,6 +50,16 @@ services:
       STT_MODEL: ${STT_MODEL}
       STT_DEVICE: ${STT_DEVICE}
       STT_COMPUTE_TYPE: ${STT_COMPUTE_TYPE}
+      LANGEXTRACT_ENABLED: ${LANGEXTRACT_ENABLED}
+      LANGEXTRACT_MODEL_ID: ${LANGEXTRACT_MODEL_ID}
+      LANGEXTRACT_MODEL_URL: ${LANGEXTRACT_MODEL_URL}
+      LANGEXTRACT_API_KEY: ${LANGEXTRACT_API_KEY}
+      LLM_CLASSIFICATION_ENABLED: ${LLM_CLASSIFICATION_ENABLED}
+      CATEGORY_NAME_LLM_ENABLED: ${CATEGORY_NAME_LLM_ENABLED}
+      CATEGORY_NAME_LLM_MODEL_ID: ${CATEGORY_NAME_LLM_MODEL_ID}
+      CATEGORY_NAME_LLM_TIMEOUT: ${CATEGORY_NAME_LLM_TIMEOUT}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      SEMANTIC_FOCUS_MAX_CHARS: ${SEMANTIC_FOCUS_MAX_CHARS}
     ports:
       - "8000:8000"
 
@@ -55,4 +75,5 @@ services:
           path: ./requirements.txt
 
 volumes:
+  ollama_data:
   postgres_data:

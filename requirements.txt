@@ -9,3 +9,4 @@ yt-dlp[default]
 trafilatura
 faster-whisper
 python-multipart
+langextract
