@@ -6,7 +6,6 @@ import langextract as lx
 
 class LlmClassificationService:
     def __init__(self) -> None:
-        self.enabled = os.getenv("LLM_CLASSIFICATION_ENABLED", "true").strip().lower() == "true"
         self.model_id = os.getenv("LANGEXTRACT_MODEL_ID", "llama3.2:3b")
         self.model_url = os.getenv("LANGEXTRACT_MODEL_URL", "http://ollama:11434")
 
