@@ -10,14 +10,17 @@ class ClusteringService:
     def __init__(self, threshold: float | None = None) -> None:
         env_threshold = os.getenv("SIMILARITY_THRESHOLD")
         self.threshold = threshold if threshold is not None else float(env_threshold or 0.75)
+        self.text_threshold = float(os.getenv("TEXT_SIMILARITY_THRESHOLD", os.getenv("SIMILARITY_THRESHOLD_TEXT", 0.45)))
 
-    def assign_cluster(self, db: Session, embedding: list[float]) -> tuple[Cluster, float, bool]:
+    def assign_cluster(self, db: Session, embedding: list[float], content_type: str | None = None) -> tuple[Cluster, float, bool]:
         clusters = db.query(Cluster).all()
         if not clusters:
             new_cluster = Cluster(centroid=embedding, size=1)
             db.add(new_cluster)
             db.flush()
             return new_cluster, 0.0, True
+
+        threshold_to_use = self.text_threshold if content_type == "text" else self.threshold
 
         best_cluster = None
         best_similarity = -1.0
@@ -28,7 +31,7 @@ class ClusteringService:
                 best_similarity = similarity
                 best_cluster = cluster
 
-        if best_cluster is not None and best_similarity > self.threshold:
+        if best_cluster is not None and best_similarity > threshold_to_use:
             best_cluster.centroid = update_centroid(best_cluster.centroid, best_cluster.size, embedding)
             best_cluster.size += 1
             db.flush()

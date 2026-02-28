@@ -39,7 +39,6 @@ def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestRespo
 
     content_type = classify_input(payload.input)
     canonical_url = _extract_canonical_url(payload.input, content_type)
-    print("Canonical URL:", canonical_url)
     if canonical_url is not None:
         existing_item = (
             db.query(ContentItem)
@@ -50,8 +49,6 @@ def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestRespo
             .order_by(ContentItem.id.asc())
             .first()
         )
-        print("Existing item check:", existing_item.id if existing_item else "None")
-
         if existing_item is not None:
             return IngestResponse(
                 id=existing_item.id,
@@ -63,7 +60,7 @@ def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestRespo
     normalized_text, metadata = normalize_content(payload.input, content_type)
     embedding = embedding_service.generate_embedding(normalized_text)
 
-    cluster, similarity, is_new_cluster = clustering_service.assign_cluster(db, embedding)
+    cluster, similarity, is_new_cluster = clustering_service.assign_cluster(db, embedding, content_type)
 
     item = ContentItem(
         original_input=payload.input,
