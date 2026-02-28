@@ -16,5 +16,37 @@ services:
       timeout: 5s
       retries: 5
 
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: newron_backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD}
+    ports:
+      - "8000:8000"
+
+    develop:
+      watch:
+        - action: sync          
+          path: ./app           
+          target: /app/app      
+          ignore:
+            - __pycache__/
+        
+        - action: rebuild
+          path: ./requirements.txt
+
 volumes:
   postgres_data:
