@@ -46,3 +46,16 @@ class HealthResponse(BaseModel):
 class PurgeResponse(BaseModel):
     deleted_items: int
     deleted_clusters: int
+
+
+class MoveItemClusterRequest(BaseModel):
+    target_cluster_id: int
+
+
+class MoveItemClusterResponse(BaseModel):
+    item_id: int
+    old_cluster_id: int
+    new_cluster_id: int
+    old_cluster_deleted: bool
+    old_cluster_size: int | None
+    new_cluster_size: int

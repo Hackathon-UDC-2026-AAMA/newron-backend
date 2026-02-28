@@ -14,6 +14,8 @@ from app.schemas import (
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    MoveItemClusterRequest,
+    MoveItemClusterResponse,
     ItemResponse,
     PurgeResponse,
 )
@@ -113,9 +115,83 @@ def purge_data(db: Session = Depends(get_db)) -> PurgeResponse:
     return PurgeResponse(deleted_items=deleted_items, deleted_clusters=deleted_clusters)
 
 
+@app.post("/items/{item_id}/move-cluster", response_model=MoveItemClusterResponse)
+def move_item_cluster(item_id: int, payload: MoveItemClusterRequest, db: Session = Depends(get_db)) -> MoveItemClusterResponse:
+    item = db.query(ContentItem).filter(ContentItem.id == item_id).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    target_cluster = db.query(Cluster).filter(Cluster.id == payload.target_cluster_id).first()
+    if target_cluster is None:
+        raise HTTPException(status_code=404, detail="Target cluster not found")
+
+    old_cluster_id = item.cluster_id
+    if old_cluster_id == target_cluster.id:
+        old_cluster_deleted, old_cluster_size = _recompute_cluster_state(db, old_cluster_id)
+        db.commit()
+        return MoveItemClusterResponse(
+            item_id=item.id,
+            old_cluster_id=old_cluster_id,
+            new_cluster_id=target_cluster.id,
+            old_cluster_deleted=old_cluster_deleted,
+            old_cluster_size=old_cluster_size,
+            new_cluster_size=old_cluster_size or 0,
+        )
+
+    item.cluster_id = target_cluster.id
+    db.flush()
+
+    old_cluster_deleted, old_cluster_size = _recompute_cluster_state(db, old_cluster_id)
+    _, new_cluster_size = _recompute_cluster_state(db, target_cluster.id)
+
+    db.commit()
+    db.refresh(item)
+
+    return MoveItemClusterResponse(
+        item_id=item.id,
+        old_cluster_id=old_cluster_id,
+        new_cluster_id=target_cluster.id,
+        old_cluster_deleted=old_cluster_deleted,
+        old_cluster_size=old_cluster_size,
+        new_cluster_size=new_cluster_size or 0,
+    )
+
+
 def _extract_canonical_url(raw_input: str, content_type: str) -> str | None:
     if content_type == "youtube":
         return extract_first_youtube_url(raw_input)
     if content_type == "link":
         return extract_first_link_url(raw_input)
     return None
+
+
+def _recompute_cluster_state(db: Session, cluster_id: int) -> tuple[bool, int | None]:
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if cluster is None:
+        return True, None
+
+    cluster_items = db.query(ContentItem).filter(ContentItem.cluster_id == cluster_id).all()
+    if not cluster_items:
+        db.delete(cluster)
+        db.flush()
+        return True, None
+
+    cluster.size = len(cluster_items)
+    cluster.centroid = _average_embeddings([item.embedding for item in cluster_items])
+    cluster.cluster_label = cluster_label_service.build_label([item.normalized_text for item in cluster_items])
+    db.flush()
+    return False, cluster.size
+
+
+def _average_embeddings(embeddings: list[list[float]]) -> list[float]:
+    if not embeddings:
+        return []
+
+    vector_size = len(embeddings[0])
+    sums = [0.0] * vector_size
+    for vector in embeddings:
+        for index, value in enumerate(vector):
+            sums[index] += value
+
+    count = float(len(embeddings))
+    return [value / count for value in sums]
