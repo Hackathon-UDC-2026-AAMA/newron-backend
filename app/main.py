@@ -22,7 +22,12 @@ from app.clustering_service import ClusteringService
 from app.database import Base, engine, get_db
 from app.embedding_service import EmbeddingService
 from app.file_storage_service import ensure_storage_dir, save_uploaded_file
-from app.file_text_service import build_index_text_for_clustering, extract_text_from_file, extract_title_from_file
+from app.file_text_service import (
+    build_index_text_for_clustering,
+    build_semantic_views_for_file,
+    extract_text_from_file,
+    extract_title_from_file,
+)
 from app.llm_category_service import LlmCategoryService
 from app.models import Cluster, ContentItem
 from app.normalizer import normalize_content
@@ -224,6 +229,10 @@ async def ingest_file(
     if not index_text:
         raise HTTPException(status_code=400, detail="No se pudo preparar texto indexable del archivo")
 
+    is_pdf = extension == ".pdf"
+    file_semantic_views = build_semantic_views_for_file(extracted_text, file_title) if is_pdf else {}
+    file_semantic_focus = semantic_focus_service.compose_focus_text(file_semantic_views) if is_pdf else None
+
     metadata_overrides = {
         "file_id": storage_info["file_id"],
         "file_name": storage_info["original_filename"],
@@ -233,15 +242,24 @@ async def ingest_file(
         "extracted_chars": len(extracted_text),
         "index_chars": len(index_text),
         "preview_text": extracted_text[:8000],
+        "pdf_semantic_envelope": is_pdf,
     }
 
+    ingest_kwargs = {
+        "raw_input": index_text,
+        "db": db,
+        "content_type_override": "file",
+        "use_semantic_focus": False,
+        "original_input_override": f"[FILE] {file_title}",
+        "metadata_overrides": metadata_overrides,
+    }
+    if is_pdf:
+        ingest_kwargs["semantic_focus_views_override"] = file_semantic_views
+        ingest_kwargs["semantic_focus_override"] = file_semantic_focus
+        ingest_kwargs["semantic_focus_source_override"] = "deterministic_file_envelope"
+
     result = _ingest_input(
-        index_text,
-        db,
-        content_type_override="file",
-        use_semantic_focus=False,
-        original_input_override=f"[FILE] {file_title}",
-        metadata_overrides=metadata_overrides,
+        **ingest_kwargs,
     )
 
     return {
@@ -267,6 +285,9 @@ def _ingest_input(
     use_semantic_focus: bool = True,
     original_input_override: str | None = None,
     metadata_overrides: dict | None = None,
+    semantic_focus_views_override: dict | None = None,
+    semantic_focus_override: str | None = None,
+    semantic_focus_source_override: str | None = None,
 ) -> IngestResponse:
     raw_input = _strip_nul(raw_input)
 
@@ -305,22 +326,40 @@ def _ingest_input(
         metadata.update(metadata_overrides)
     metadata = _sanitize_metadata(metadata)
     metadata["classification_source"] = classification_source
-    if use_semantic_focus:
+    if semantic_focus_views_override is not None or semantic_focus_override is not None:
+        semantic_focus_views = semantic_focus_views_override or {}
+        if semantic_focus_override is not None:
+            semantic_focus = semantic_focus_override
+        elif semantic_focus_views:
+            semantic_focus = semantic_focus_service.compose_focus_text(semantic_focus_views)
+        else:
+            semantic_focus = normalized_text
+        semantic_focus_source = semantic_focus_source_override or "provided_override"
+    elif use_semantic_focus:
         try:
-            semantic_focus, semantic_focus_source = semantic_focus_service.build_focus(normalized_text, content_type)
+            semantic_focus_views, semantic_focus_source = semantic_focus_service.build_focus_views(normalized_text, content_type)
+            semantic_focus = semantic_focus_service.compose_focus_text(semantic_focus_views)
         except ValueError as exc:
-            raise HTTPException(status_code=503, detail=f"Semantic focus LLM no disponible: {exc}") from exc
+            semantic_focus_views = {}
+            semantic_focus = normalized_text
+            semantic_focus_source = f"fallback_on_error:{str(exc)}"
     else:
+        semantic_focus_views = {}
         semantic_focus = normalized_text
         semantic_focus_source = "disabled_for_file"
 
     semantic_focus = _strip_nul(semantic_focus)
 
+    embedding_text = _build_embedding_text(normalized_text, semantic_focus, semantic_focus_views)
+    embedding_text = _strip_nul(embedding_text)
+
     metadata["semantic_focus"] = semantic_focus
+    metadata["semantic_focus_views"] = semantic_focus_views
+    metadata["embedding_text"] = embedding_text
     metadata["semantic_focus_source"] = semantic_focus_source
     metadata.setdefault("pre_focus_text", normalized_text)
 
-    embedding = embedding_service.generate_embedding(semantic_focus)
+    embedding = embedding_service.generate_embedding(embedding_text)
 
     cluster, similarity, is_new_cluster = clustering_service.assign_cluster(db, embedding, content_type)
 
@@ -546,6 +585,50 @@ def _average_embeddings(embeddings: list[list[float]]) -> list[float]:
 
     count = float(len(embeddings))
     return [value / count for value in sums]
+
+
+def _build_embedding_text(normalized_text: str, semantic_focus: str, semantic_focus_views: dict) -> str:
+    base_text = _strip_nul(normalized_text).strip()
+    focus_text = _strip_nul(semantic_focus).strip()
+
+    view_parts: list[str] = []
+    topic = _strip_nul(str(semantic_focus_views.get("topic", ""))).strip()
+    domain = _strip_nul(str(semantic_focus_views.get("domain", ""))).strip()
+    summary = _strip_nul(str(semantic_focus_views.get("summary", ""))).strip()
+    intent = _strip_nul(str(semantic_focus_views.get("intent", ""))).strip()
+    expanded_context = _strip_nul(str(semantic_focus_views.get("expanded_context", ""))).strip()
+
+    if topic:
+        view_parts.append(f"topic: {topic}")
+    if domain:
+        view_parts.append(f"domain: {domain}")
+    if summary:
+        view_parts.append(f"summary: {summary}")
+    if intent:
+        view_parts.append(f"intent: {intent}")
+
+    raw_keywords = semantic_focus_views.get("keywords", [])
+    if isinstance(raw_keywords, list):
+        cleaned_keywords = [
+            _strip_nul(str(keyword)).strip()
+            for keyword in raw_keywords
+            if _strip_nul(str(keyword)).strip()
+        ]
+        if cleaned_keywords:
+            view_parts.append(f"keywords: {', '.join(cleaned_keywords[:8])}")
+
+    if expanded_context:
+        view_parts.append(f"expanded: {expanded_context}")
+
+    semantic_context_block = "\n".join(view_parts).strip()
+
+    if semantic_context_block:
+        return f"{base_text}\n\nSemantic focus: {focus_text}\n{semantic_context_block}".strip()
+
+    if focus_text and focus_text != base_text:
+        return f"{base_text}\n\nSemantic focus: {focus_text}".strip()
+
+    return base_text
 
 
 def _strip_nul(value: str) -> str:

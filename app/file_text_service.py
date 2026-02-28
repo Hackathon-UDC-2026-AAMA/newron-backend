@@ -1,4 +1,5 @@
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -7,6 +8,20 @@ from pypdf import PdfReader
 
 MAX_EXTRACTED_CHARS = 50000
 DEFAULT_FILE_TITLE_WEIGHT = int(os.getenv("FILE_TITLE_WEIGHT", "4"))
+
+SPANISH_STOPWORDS = {
+    "de", "la", "que", "el", "en", "y", "a", "los", "del", "se", "las", "por", "un", "para", "con",
+    "no", "una", "su", "al", "lo", "como", "más", "pero", "sus", "le", "ya", "o", "este", "sí", "porque",
+    "esta", "entre", "cuando", "muy", "sin", "sobre", "también", "me", "hasta", "hay", "donde", "quien", "desde",
+    "todo", "nos", "durante", "todos", "uno", "les", "ni", "contra", "otros", "ese", "eso", "ante", "ellos",
+    "e", "esto", "mí", "antes", "algunos", "qué", "unos", "yo", "otro", "otras", "otra", "él", "tanto",
+    "esa", "estos", "mucho", "quienes", "nada", "muchos", "cual", "poco", "ella", "estar", "estas", "algunas",
+    "algo", "nosotros", "mi", "mis", "tú", "te", "ti", "tu", "tus", "ellas", "nosotras", "vosotros", "vosotras",
+    "os", "mío", "mía", "míos", "mías", "tuyo", "tuya", "tuyos", "tuyas", "suyo", "suya", "suyos", "suyas",
+    "nuestro", "nuestra", "nuestros", "nuestras", "vuestro", "vuestra", "vuestros", "vuestras", "esos", "esas",
+    "estoy", "estás", "está", "estamos", "están", "fue", "fueron", "ser", "es", "son", "era", "eran", "ha",
+    "han", "haber", "si", "solo", "sólo", "cada", "además", "través", "puede", "pueden", "hacia", "tras", "aquí",
+}
 
 
 def extract_text_from_file(file_bytes: bytes, extension: str) -> str:
@@ -113,3 +128,81 @@ def _title_from_filename(filename: str) -> str:
 
 def _clean_title(value: str) -> str:
     return _clean_limit(value)[:220]
+
+
+def build_semantic_views_for_file(text: str, title: str) -> dict[str, object]:
+    clean_title = _clean_title(title)
+    summary = _build_file_summary(text)
+    keywords = _extract_keywords(text, max_keywords=8)
+    domain = _infer_domain_from_keywords(keywords)
+    topic = clean_title or (keywords[0] if keywords else "documento")
+    intent = "referencia documental"
+
+    expanded_parts = [topic]
+    if domain:
+        expanded_parts.append(domain)
+    if summary:
+        expanded_parts.append(summary)
+    if keywords:
+        expanded_parts.append("palabras clave: " + ", ".join(keywords[:6]))
+
+    expanded_context = _clean_limit(". ".join(part for part in expanded_parts if part))[:400]
+
+    return {
+        "topic": topic,
+        "domain": domain,
+        "summary": summary,
+        "keywords": keywords,
+        "intent": intent,
+        "expanded_context": expanded_context,
+    }
+
+
+def _build_file_summary(text: str, max_sentences: int = 3, max_chars: int = 380) -> str:
+    if not text:
+        return ""
+
+    sentences = [segment.strip() for segment in re.split(r"(?<=[.!?])\s+", text) if segment.strip()]
+    selected: list[str] = []
+    current_chars = 0
+
+    for sentence in sentences:
+        normalized = _clean_limit(sentence)
+        if len(normalized) < 25:
+            continue
+        proposed = current_chars + len(normalized) + (1 if selected else 0)
+        if proposed > max_chars:
+            break
+        selected.append(normalized)
+        current_chars = proposed
+        if len(selected) >= max_sentences:
+            break
+
+    if not selected:
+        return _clean_limit(text)[:max_chars]
+    return " ".join(selected)
+
+
+def _extract_keywords(text: str, max_keywords: int = 8) -> list[str]:
+    tokens = re.findall(r"[a-záéíóúñü]{4,}", text.lower())
+    frequencies: dict[str, int] = {}
+    for token in tokens:
+        if token in SPANISH_STOPWORDS:
+            continue
+        frequencies[token] = frequencies.get(token, 0) + 1
+
+    sorted_tokens = sorted(frequencies.items(), key=lambda item: (-item[1], item[0]))
+    return [token for token, _ in sorted_tokens[:max_keywords]]
+
+
+def _infer_domain_from_keywords(keywords: list[str]) -> str:
+    joined = " ".join(keywords)
+    if any(term in joined for term in {"software", "código", "programación", "algoritmo", "datos", "sistema"}):
+        return "tecnología y software"
+    if any(term in joined for term in {"empresa", "mercado", "cliente", "finanzas", "negocio", "estrategia"}):
+        return "negocio y estrategia"
+    if any(term in joined for term in {"salud", "clínico", "médico", "paciente", "tratamiento"}):
+        return "salud y medicina"
+    if any(term in joined for term in {"investigación", "estudio", "metodología", "análisis", "científico"}):
+        return "investigación"
+    return "documentación general"
