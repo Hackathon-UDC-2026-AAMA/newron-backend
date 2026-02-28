@@ -11,3 +11,6 @@ faster-whisper
 python-multipart
 langextract
 pypdf
+qrcode
+qrcode_terminal
+psutil
