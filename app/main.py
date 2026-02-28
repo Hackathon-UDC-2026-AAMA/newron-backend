@@ -8,6 +8,10 @@ import socket
 import qrcode
 from fastapi.responses import StreamingResponse
 import qrcode_terminal
+import json
+from fastapi import Request
+import psutil
+import os
 
 from app.classifier import classify_input, extract_first_link_url, extract_first_youtube_url
 from app.cluster_label_service import ClusterLabelService
@@ -35,24 +39,28 @@ cluster_label_service = ClusterLabelService()
 
 QR_TOKEN = None
 QR_EXPIRATION = None
-AUTHORIZED_DEVICES = set()
+PAIRED = False
 
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-    finally:
-        s.close()
-    return ip
+def get_server_ip():
+    # Intenta leer la IP que le pasamos desde afuera
+    # Si no existe, usa localhost por defecto
+    return os.getenv("HOST_IP", "127.0.0.1")
 
 
 @app.get("/qr")
 def get_qr():
-    ip = get_local_ip()
-    url = f"http://{ip}:8000/connect?token={QR_TOKEN}"
+    ip = get_server_ip()
 
-    img = qrcode.make(url)
+    payload = {
+        "ip": ip,
+        "token": QR_TOKEN
+    }
+
+    qr_data = json.dumps(payload)
+
+    img = qrcode.make(qr_data)
+
+    print(ip)
 
     buffer = BytesIO()
     img.save(buffer, format="PNG")
@@ -60,28 +68,17 @@ def get_qr():
 
     return StreamingResponse(buffer, media_type="image/png")
 
-@app.middleware("http")
-async def auth(request, call_next):
-    device = request.headers.get("X-Device-ID")
-
-    if device not in AUTHORIZED_DEVICES:
-        raise HTTPException(403)
-
-    return await call_next(request)
-
 @app.post("/pair")
-def pair(secret: str, device_id: str):
+def pair(secret: str):
     global PAIRED
-
-    if PAIRED:
-        raise HTTPException(403, "Already paired")
 
     if secret != QR_TOKEN:
         raise HTTPException(403, "Invalid")
 
-    AUTHORIZED_DEVICES.add(device_id)
-    PAIRED = True
+    if PAIRED:
+        return {"status": "already_paired"}
 
+    PAIRED = True
     return {"status": "paired"}
 
 @app.on_event("startup")
@@ -99,11 +96,19 @@ def startup() -> None:
     print("Open http://localhost:8000/qr")
     print("==============================\n")
 
-    ip = get_local_ip()
-    url = f"http://{ip}:8000/pair?secret={QR_TOKEN}"
+    ip = get_server_ip()
+
+    payload = {
+        "ip": ip,
+        "token": QR_TOKEN
+    }
+
+    print(payload)
+
+    qr_data = json.dumps(payload)
 
     print("\n=== PAIR YOUR MOBILE ===\n")
-    qrcode_terminal.draw(url)
+    qrcode_terminal.draw(qr_data)
     print("\nScan this QR with your Expo app\n")
 
 
