@@ -21,7 +21,8 @@ class ItemResponse(BaseModel):
     id: int
     original_input: str
     type: str
-    normalized_text: str
+    normalized_text: str = Field(validation_alias="original_input")
+    processed_text: str = Field(validation_alias="normalized_text")
     metadata: dict[str, Any] = Field(validation_alias="metadata_json")
     embedding: list[float]
     cluster_id: int
@@ -34,6 +35,8 @@ class ClusterResponse(BaseModel):
 
     id: int
     cluster_label: str | None
+    cluster_description: str | None = None
+    cluster_keywords: list[str] = Field(default_factory=list)
     size: int
     centroid: list[float]
     created_at: datetime
@@ -59,3 +62,11 @@ class MoveItemClusterResponse(BaseModel):
     old_cluster_deleted: bool
     old_cluster_size: int | None
     new_cluster_size: int
+
+
+class ItemContentResponse(BaseModel):
+    item_id: int
+    type: str
+    title: str | None = None
+    content: str
+    download_url: str | None = None
