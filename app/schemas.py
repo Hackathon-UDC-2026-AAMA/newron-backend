@@ -5,35 +5,42 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class IngestRequest(BaseModel):
-    input: str | list[str]
+    input: str | list[str] = Field(
+        ...,
+        description="Texto único o lista de textos/URLs para ingesta.",
+        examples=[
+            "Nota técnica sobre embeddings y clustering",
+            ["https://example.com", "Resumen de reunión de producto"],
+        ],
+    )
 
 
 class IngestResponse(BaseModel):
-    id: int
-    type: str
-    cluster_id: int
-    similarity_score: float | None
+    id: int = Field(..., description="ID del item guardado.")
+    type: str = Field(..., description="Tipo detectado: text, link, youtube, audio o file.")
+    cluster_id: int = Field(..., description="Cluster asignado al item.")
+    similarity_score: float | None = Field(None, description="Similitud contra el centroide del cluster elegido.")
 
 
 class BulkIngestRequest(BaseModel):
-    inputs: list[str]
-    continue_on_error: bool = True
+    inputs: list[str] = Field(..., description="Lista de entradas a procesar en lote.")
+    continue_on_error: bool = Field(True, description="Si es false, se detiene el lote al primer error.")
 
 
 class BulkIngestItemResult(BaseModel):
-    index: int
-    input: str
-    success: bool
-    result: IngestResponse | None = None
-    error: str | None = None
+    index: int = Field(..., description="Posición del elemento en el lote de entrada.")
+    input: str = Field(..., description="Valor original enviado para este elemento.")
+    success: bool = Field(..., description="Indica si el elemento se procesó correctamente.")
+    result: IngestResponse | None = Field(None, description="Resultado de ingesta cuando success=true.")
+    error: str | None = Field(None, description="Error de procesamiento cuando success=false.")
 
 
 class BulkIngestResponse(BaseModel):
-    total: int
-    processed: int
-    succeeded: int
-    failed: int
-    results: list[BulkIngestItemResult]
+    total: int = Field(..., description="Cantidad total recibida en el lote.")
+    processed: int = Field(..., description="Cantidad realmente procesada.")
+    succeeded: int = Field(..., description="Cantidad de elementos procesados con éxito.")
+    failed: int = Field(..., description="Cantidad de elementos con error.")
+    results: list[BulkIngestItemResult] = Field(..., description="Resultado detallado por elemento.")
 
 
 class ItemResponse(BaseModel):

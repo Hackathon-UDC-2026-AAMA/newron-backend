@@ -49,7 +49,25 @@ from app.schemas import (
     PurgeResponse,
 )
 
-app = FastAPI(title="Semantic Ingestion Backend", version="1.0.0")
+OPENAPI_TAGS = [
+    {"name": "Auth", "description": "Pairing QR y sesión móvil."},
+    {"name": "Ingest", "description": "Entrada de contenido (texto, lista, audio y archivos)."},
+    {"name": "Items", "description": "Consulta y recuperación de items indexados."},
+    {"name": "Clusters", "description": "Consulta de clusters y agrupaciones."},
+    {"name": "Admin", "description": "Operaciones administrativas de mantenimiento."},
+    {"name": "Health", "description": "Estado operativo del servicio."},
+]
+
+app = FastAPI(
+    title="Semantic Ingestion Backend",
+    version="1.0.0",
+    description=(
+        "API de ingesta semántica para frontend. "
+        "Permite indexar texto, enlaces, YouTube, audio y archivos; "
+        "consultar clusters/items y recuperar archivos categorizados."
+    ),
+    openapi_tags=OPENAPI_TAGS,
+)
 
 embedding_service = EmbeddingService()
 clustering_service = ClusteringService()
@@ -67,7 +85,7 @@ def get_server_ip():
     return os.getenv("HOST_IP", "127.0.0.1")
 
 
-@app.get("/qr")
+@app.get("/qr", tags=["Auth"], summary="Generar QR de pairing", description="Devuelve un PNG con el QR para vincular cliente móvil.")
 def get_qr():
     ip = get_server_ip()
 
@@ -88,7 +106,7 @@ def get_qr():
 
     return StreamingResponse(buffer, media_type="image/png")
 
-@app.post("/pair")
+@app.post("/pair", tags=["Auth"], summary="Confirmar pairing", description="Valida el token escaneado desde el QR y marca la sesión como vinculada.")
 def pair(secret: str):
     global PAIRED
 
@@ -136,7 +154,13 @@ def startup() -> None:
     print("\nScan this QR with your Expo app\n")
 
 
-@app.post("/ingest", response_model=IngestResponse | BulkIngestResponse)
+@app.post(
+    "/ingest",
+    response_model=IngestResponse | BulkIngestResponse,
+    tags=["Ingest"],
+    summary="Ingesta unitaria o en lote",
+    description="Si input es string procesa un item; si input es lista procesa lote y devuelve resultados por elemento.",
+)
 def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestResponse | BulkIngestResponse:
     if isinstance(payload.input, list):
         return _ingest_bulk(
@@ -195,7 +219,12 @@ def _ingest_bulk(payload: BulkIngestRequest, db: Session) -> BulkIngestResponse:
     )
 
 
-@app.post("/ingest-audio")
+@app.post(
+    "/ingest-audio",
+    tags=["Ingest"],
+    summary="Ingesta de audio",
+    description="Recibe archivo de audio, transcribe y lo indexa como contenido tipo audio.",
+)
 async def ingest_audio(
     request: Request,
     file: UploadFile | None = File(None),
@@ -243,7 +272,12 @@ async def ingest_audio(
     }
 
 
-@app.post("/ingest-file")
+@app.post(
+    "/ingest-file",
+    tags=["Ingest"],
+    summary="Ingesta de archivo",
+    description="Guarda el archivo original, extrae texto y genera embedding determinista sin LangExtract.",
+)
 async def ingest_file(
     request: Request,
     file: UploadFile | None = File(None),
@@ -453,7 +487,12 @@ def _ingest_input(
     )
 
 
-@app.get("/items/{item_id}/file")
+@app.get(
+    "/items/{item_id}/file",
+    tags=["Items"],
+    summary="Descargar archivo original",
+    description="Devuelve el archivo original asociado a un item de tipo file.",
+)
 def get_item_file(item_id: int, db: Session = Depends(get_db)) -> FileResponse:
     item = db.query(ContentItem).filter(ContentItem.id == item_id).first()
     if item is None:
@@ -485,12 +524,24 @@ def get_item_file(item_id: int, db: Session = Depends(get_db)) -> FileResponse:
     return FileResponse(path=stored_path, filename=filename, media_type=media_type)
 
 
-@app.get("/items", response_model=list[ItemResponse])
+@app.get(
+    "/items",
+    response_model=list[ItemResponse],
+    tags=["Items"],
+    summary="Listar items",
+    description="Lista todos los items indexados ordenados por ID ascendente.",
+)
 def get_items(db: Session = Depends(get_db)) -> list[ContentItem]:
     return db.query(ContentItem).order_by(ContentItem.id.asc()).all()
 
 
-@app.get("/clusters/{cluster_id}/items", response_model=list[ItemResponse])
+@app.get(
+    "/clusters/{cluster_id}/items",
+    response_model=list[ItemResponse],
+    tags=["Clusters"],
+    summary="Listar items de un cluster",
+    description="Devuelve los items pertenecientes a un cluster específico.",
+)
 def get_cluster_items(cluster_id: int, db: Session = Depends(get_db)) -> list[ContentItem]:
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if cluster is None:
@@ -504,7 +555,13 @@ def get_cluster_items(cluster_id: int, db: Session = Depends(get_db)) -> list[Co
     )
 
 
-@app.get("/items/{item_id}/content", response_model=ItemContentResponse)
+@app.get(
+    "/items/{item_id}/content",
+    response_model=ItemContentResponse,
+    tags=["Items"],
+    summary="Obtener contenido para UI",
+    description="Devuelve texto de presentación para chat/UI; en archivos devuelve preview y URL de descarga.",
+)
 def get_item_content(item_id: int, db: Session = Depends(get_db)) -> ItemContentResponse:
     item = db.query(ContentItem).filter(ContentItem.id == item_id).first()
     if item is None:
@@ -549,25 +606,49 @@ def get_item_content(item_id: int, db: Session = Depends(get_db)) -> ItemContent
     )
 
 
-@app.get("/clusters", response_model=list[ClusterResponse])
+@app.get(
+    "/clusters",
+    response_model=list[ClusterResponse],
+    tags=["Clusters"],
+    summary="Listar clusters",
+    description="Devuelve todos los clusters con centroides y metadata de categoría.",
+)
 def get_clusters(db: Session = Depends(get_db)) -> list[Cluster]:
     return db.query(Cluster).order_by(Cluster.id.asc()).all()
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["Health"],
+    summary="Health check",
+    description="Verifica conectividad básica con base de datos y estado del servicio.",
+)
 def health(db: Session = Depends(get_db)) -> HealthResponse:
     db.execute(text("SELECT 1"))
     return HealthResponse(status="ok")
 
 
-@app.post("/admin/purge", response_model=PurgeResponse)
+@app.post(
+    "/admin/purge",
+    response_model=PurgeResponse,
+    tags=["Admin"],
+    summary="Purgar datos",
+    description="Elimina todos los items y clusters. Operación destructiva.",
+)
 def purge_data(db: Session = Depends(get_db)) -> PurgeResponse:
     deleted_items = db.query(ContentItem).delete(synchronize_session=False)
     deleted_clusters = db.query(Cluster).delete(synchronize_session=False)
     db.commit()
     return PurgeResponse(deleted_items=deleted_items, deleted_clusters=deleted_clusters)
 
-@app.post("/items/{item_id}/move-cluster", response_model=MoveItemClusterResponse)
+@app.post(
+    "/items/{item_id}/move-cluster",
+    response_model=MoveItemClusterResponse,
+    tags=["Clusters"],
+    summary="Mover item entre clusters",
+    description="Reasigna manualmente un item a otro cluster y recalcula ambos clusters.",
+)
 def move_item_cluster(item_id: int, payload: MoveItemClusterRequest, db: Session = Depends(get_db)) -> MoveItemClusterResponse:
     item = db.query(ContentItem).filter(ContentItem.id == item_id).first()
     if item is None:
