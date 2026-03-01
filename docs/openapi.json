@@ -73,7 +73,7 @@
           "Ingest"
         ],
         "summary": "Ingesta unitaria o en lote",
-        "description": "Si input es string procesa un item; si input es lista procesa lote y devuelve resultados por elemento.",
+        "description": "Encola ingesta unitaria o en lote en background y devuelve aceptación inmediata.",
         "operationId": "ingest_ingest_post",
         "requestBody": {
           "content": {
@@ -91,15 +91,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/IngestResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/BulkIngestResponse"
-                    }
-                  ],
-                  "title": "Response Ingest Ingest Post"
+                  "$ref": "#/components/schemas/ProcessingResponse"
                 }
               }
             }
@@ -568,96 +560,6 @@
         "type": "object",
         "title": "Body_ingest_file_ingest_file_post"
       },
-      "BulkIngestItemResult": {
-        "properties": {
-          "index": {
-            "type": "integer",
-            "title": "Index",
-            "description": "Posición del elemento en el lote de entrada."
-          },
-          "input": {
-            "type": "string",
-            "title": "Input",
-            "description": "Valor original enviado para este elemento."
-          },
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "description": "Indica si el elemento se procesó correctamente."
-          },
-          "result": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/IngestResponse"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Resultado de ingesta cuando success=true."
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error",
-            "description": "Error de procesamiento cuando success=false."
-          }
-        },
-        "type": "object",
-        "required": [
-          "index",
-          "input",
-          "success"
-        ],
-        "title": "BulkIngestItemResult"
-      },
-      "BulkIngestResponse": {
-        "properties": {
-          "total": {
-            "type": "integer",
-            "title": "Total",
-            "description": "Cantidad total recibida en el lote."
-          },
-          "processed": {
-            "type": "integer",
-            "title": "Processed",
-            "description": "Cantidad realmente procesada."
-          },
-          "succeeded": {
-            "type": "integer",
-            "title": "Succeeded",
-            "description": "Cantidad de elementos procesados con éxito."
-          },
-          "failed": {
-            "type": "integer",
-            "title": "Failed",
-            "description": "Cantidad de elementos con error."
-          },
-          "results": {
-            "items": {
-              "$ref": "#/components/schemas/BulkIngestItemResult"
-            },
-            "type": "array",
-            "title": "Results",
-            "description": "Resultado detallado por elemento."
-          }
-        },
-        "type": "object",
-        "required": [
-          "total",
-          "processed",
-          "succeeded",
-          "failed",
-          "results"
-        ],
-        "title": "BulkIngestResponse"
-      },
       "ClusterResponse": {
         "properties": {
           "id": {
@@ -776,44 +678,6 @@
           "input"
         ],
         "title": "IngestRequest"
-      },
-      "IngestResponse": {
-        "properties": {
-          "id": {
-            "type": "integer",
-            "title": "Id",
-            "description": "ID del item guardado."
-          },
-          "type": {
-            "type": "string",
-            "title": "Type",
-            "description": "Tipo detectado: text, link, youtube, audio o file."
-          },
-          "cluster_id": {
-            "type": "integer",
-            "title": "Cluster Id",
-            "description": "Cluster asignado al item."
-          },
-          "similarity_score": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Similarity Score",
-            "description": "Similitud contra el centroide del cluster elegido."
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "type",
-          "cluster_id"
-        ],
-        "title": "IngestResponse"
       },
       "ItemContentResponse": {
         "properties": {
@@ -987,6 +851,32 @@
           "new_cluster_size"
         ],
         "title": "MoveItemClusterResponse"
+      },
+      "ProcessingResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Estado de encolado del procesamiento."
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "description": "Modo de ingesta encolado: single, bulk, audio o file."
+          },
+          "queued": {
+            "type": "integer",
+            "title": "Queued",
+            "description": "Cantidad de tareas encoladas por la petición."
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "mode",
+          "queued"
+        ],
+        "title": "ProcessingResponse"
       },
       "PurgeResponse": {
         "properties": {

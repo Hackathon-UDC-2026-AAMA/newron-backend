@@ -81,6 +81,7 @@ AUDIO_FILE_EXTENSIONS = {".m4a", ".mp3", ".wav"}
 TEXT_FILE_FANOUT_EXTENSIONS = {".txt", ".md", ".markdown"}
 FILE_LINK_FANOUT_ENABLED = True
 FILE_LINK_FANOUT_MIN_LINKS = 2
+ALLOW_BINARY_FILE_FALLBACK = os.getenv("ALLOW_BINARY_FILE_FALLBACK", "true").strip().lower() == "true"
 
 def get_server_ip():
     # Intenta leer la IP que le pasamos desde afuera
@@ -241,14 +242,17 @@ async def ingest_audio(
     audio: UploadFile | None = File(None),
 ) -> dict:
     uploaded_file = file or audio
+    received_form_keys: list[str] = []
     if uploaded_file is None:
-        form = await request.form()
+        uploaded_file, received_form_keys = await _pick_upload_from_form(request)
+
+    if uploaded_file is None:
         raise HTTPException(
             status_code=400,
             detail={
                 "message": "No se recibió archivo. Usa multipart/form-data con key 'file' o 'audio'.",
                 "content_type": request.headers.get("content-type", ""),
-                "received_form_keys": list(form.keys()),
+                "received_form_keys": received_form_keys,
             },
         )
 
@@ -286,33 +290,37 @@ async def ingest_file(
     metadata: str | None = Form(None),
 ) -> dict:
     uploaded_file = file or document
+    received_form_keys: list[str] = []
     if uploaded_file is None:
-        form = await request.form()
+        content_type_header = request.headers.get("content-type", "")
+        if "multipart/form-data" in content_type_header.lower():
+            uploaded_file, received_form_keys = await _pick_upload_from_form(request)
+        else:
+            raise HTTPException(
+                status_code=415,
+                detail={
+                    "message": "Usa multipart/form-data para subir archivos.",
+                    "content_type": content_type_header,
+                },
+            )
+
+    if uploaded_file is None:
         raise HTTPException(
             status_code=400,
             detail={
                 "message": "No se recibió archivo. Usa multipart/form-data con key 'file' o 'document'.",
                 "content_type": request.headers.get("content-type", ""),
-                "received_form_keys": list(form.keys()),
+                "received_form_keys": received_form_keys,
             },
         )
-
     filename = uploaded_file.filename or "document"
-    filename_extension = f".{filename.lower().split('.')[-1]}" if "." in filename else ""
-    declared_extension = _resolve_declared_file_extension(file_type=file_type, metadata_raw=metadata)
-
-    if (file_type or metadata) and not declared_extension:
-        raise HTTPException(status_code=400, detail="Tipo de archivo declarado no soportado")
-
-    extension = declared_extension or filename_extension
-    if extension not in SUPPORTED_FILE_EXTENSIONS and extension not in AUDIO_FILE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Formato de archivo no soportado")
+    uploaded_content_type = (uploaded_file.content_type or "").strip().lower()
 
     file_bytes = await uploaded_file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Archivo vacío")
 
-    background_tasks.add_task(_process_ingest_file_task, file_bytes, filename, file_type, metadata)
+    background_tasks.add_task(_process_ingest_file_task, file_bytes, filename, file_type, metadata, uploaded_content_type)
 
     return {
         "filename": filename,
@@ -354,15 +362,19 @@ def _process_ingest_audio_task(audio_bytes: bytes, filename: str, extension: str
         db.close()
 
 
-def _process_ingest_file_task(file_bytes: bytes, filename: str, file_type: str | None, metadata_raw: str | None) -> None:
+def _process_ingest_file_task(
+    file_bytes: bytes,
+    filename: str,
+    file_type: str | None,
+    metadata_raw: str | None,
+    uploaded_content_type: str | None,
+) -> None:
     db = SessionLocal()
     try:
         filename_extension = f".{filename.lower().split('.')[-1]}" if "." in filename else ""
         declared_extension = _resolve_declared_file_extension(file_type=file_type, metadata_raw=metadata_raw)
-        extension = declared_extension or filename_extension
-
-        if extension not in SUPPORTED_FILE_EXTENSIONS and extension not in AUDIO_FILE_EXTENSIONS:
-            raise ValueError("Formato de archivo no soportado")
+        content_type_extension = _normalize_file_type_to_extension(uploaded_content_type or "") if uploaded_content_type else None
+        extension = declared_extension or filename_extension or content_type_extension or ".bin"
 
         storage_info = save_uploaded_file(file_bytes, filename)
 
@@ -388,6 +400,35 @@ def _process_ingest_file_task(file_bytes: bytes, filename: str, file_type: str |
                 content_type_override="audio",
                 original_input_override=f"[AUDIO_FILE] {filename}",
                 metadata_overrides=metadata_overrides,
+            )
+            return
+
+        is_extractable_extension = extension in SUPPORTED_FILE_EXTENSIONS
+        if not is_extractable_extension:
+            if not ALLOW_BINARY_FILE_FALLBACK:
+                raise ValueError(f"Extensión no soportada para indexación: {extension}")
+
+            generic_metadata_overrides = {
+                "file_id": storage_info["file_id"],
+                "file_name": storage_info["original_filename"],
+                "file_storage_path": storage_info["stored_path"],
+                "file_size_bytes": storage_info["file_size_bytes"],
+                "declared_file_type": file_type,
+                "file_extension": extension,
+                "ingest_mode": "file_binary_fallback",
+                "uploaded_content_type": uploaded_content_type,
+                "preview_text": "",
+                "deterministic_file_envelope": False,
+            }
+
+            generic_seed = f"archivo {filename} extension {extension}"
+            _ingest_input(
+                raw_input=generic_seed,
+                db=db,
+                content_type_override="file",
+                use_semantic_focus=False,
+                original_input_override=f"[FILE] {filename}",
+                metadata_overrides=generic_metadata_overrides,
             )
             return
 
@@ -797,6 +838,17 @@ def _extract_canonical_url(raw_input: str, content_type: str) -> str | None:
     if content_type == "link":
         return extract_first_link_url(raw_input)
     return None
+
+
+async def _pick_upload_from_form(request: Request) -> tuple[UploadFile | None, list[str]]:
+    form = await request.form()
+    form_keys = list(form.keys())
+
+    for _, value in form.multi_items():
+        if isinstance(value, UploadFile):
+            return value, form_keys
+
+    return None, form_keys
 
 
 def _resolve_declared_file_extension(file_type: str | None, metadata_raw: str | None) -> str | None:
