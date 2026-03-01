@@ -99,3 +99,21 @@ También puede ejecutarse manualmente:
 ```bash
 python -m app.export_openapi
 ```
+
+## Cola simple de ingesta (BackgroundTasks)
+
+Para evitar que peticiones de ingesta largas bloqueen el proceso principal, se implementó una cola simple en segundo plano usando `BackgroundTasks` de FastAPI.
+
+- Los endpoints de ingesta aceptan la petición y responden rápido con estado `processing`.
+- El trabajo pesado (embedding, clustering, recalculo de cluster, etc.) se ejecuta después en background.
+- Esto permite que los endpoints `GET` sigan respondiendo mientras se procesan ingestas.
+
+Objetivo de esta decisión:
+
+- no inhabilitar el backend por operaciones de ingestión costosas,
+- mantener buena experiencia de usuario en consultas,
+- evitar introducir infraestructura extra (broker/worker) en esta fase.
+
+Limitación conocida:
+
+- si el proceso del backend cae, las tareas en memoria en curso se pierden.

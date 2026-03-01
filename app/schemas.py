@@ -22,6 +22,12 @@ class IngestResponse(BaseModel):
     similarity_score: float | None = Field(None, description="Similitud contra el centroide del cluster elegido.")
 
 
+class ProcessingResponse(BaseModel):
+    status: str = Field(..., description="Estado de encolado del procesamiento.")
+    mode: str = Field(..., description="Modo de ingesta encolado: single, bulk, audio o file.")
+    queued: int = Field(..., description="Cantidad de tareas encoladas por la petición.")
+
+
 class BulkIngestRequest(BaseModel):
     inputs: list[str] = Field(..., description="Lista de entradas a procesar en lote.")
     continue_on_error: bool = Field(True, description="Si es false, se detiene el lote al primer error.")

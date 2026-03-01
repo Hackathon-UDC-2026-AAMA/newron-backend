@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -17,7 +17,7 @@ import os
 from app.classifier import classify_input, extract_all_link_urls, extract_first_link_url, extract_first_youtube_url
 from app.cluster_label_service import ClusterLabelService
 from app.clustering_service import ClusteringService
-from app.database import Base, engine, get_db
+from app.database import Base, SessionLocal, engine, get_db
 from app.embedding_service import EmbeddingService
 from app.file_storage_service import ensure_storage_dir, save_uploaded_file
 from app.file_text_service import (
@@ -39,6 +39,7 @@ from app.schemas import (
     ClusterResponse,
     HealthResponse,
     IngestRequest,
+    ProcessingResponse,
     IngestResponse,
     ItemContentResponse,
     MoveItemClusterRequest,
@@ -158,18 +159,24 @@ def startup() -> None:
 
 @app.post(
     "/ingest",
-    response_model=IngestResponse | BulkIngestResponse,
+    response_model=ProcessingResponse,
     tags=["Ingest"],
     summary="Ingesta unitaria o en lote",
-    description="Si input es string procesa un item; si input es lista procesa lote y devuelve resultados por elemento.",
+    description="Encola ingesta unitaria o en lote en background y devuelve aceptación inmediata.",
 )
-def ingest(payload: IngestRequest, db: Session = Depends(get_db)) -> IngestResponse | BulkIngestResponse:
+def ingest(payload: IngestRequest, background_tasks: BackgroundTasks) -> ProcessingResponse:
     if isinstance(payload.input, list):
-        return _ingest_bulk(
-            BulkIngestRequest(inputs=payload.input, continue_on_error=True),
-            db,
-        )
-    return _ingest_input(payload.input, db)
+        max_bulk_items = int(os.getenv("BULK_INGEST_MAX_ITEMS", "100"))
+        if not payload.input:
+            raise HTTPException(status_code=400, detail="inputs must not be empty")
+        if len(payload.input) > max_bulk_items:
+            raise HTTPException(status_code=400, detail=f"Bulk size exceeds limit ({max_bulk_items})")
+
+        background_tasks.add_task(_process_ingest_bulk_task, payload.input)
+        return ProcessingResponse(status="processing", mode="bulk", queued=len(payload.input))
+
+    background_tasks.add_task(_process_ingest_text_task, payload.input)
+    return ProcessingResponse(status="processing", mode="single", queued=1)
 
 
 def _ingest_bulk(payload: BulkIngestRequest, db: Session) -> BulkIngestResponse:
@@ -229,9 +236,9 @@ def _ingest_bulk(payload: BulkIngestRequest, db: Session) -> BulkIngestResponse:
 )
 async def ingest_audio(
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile | None = File(None),
     audio: UploadFile | None = File(None),
-    db: Session = Depends(get_db),
 ) -> dict:
     uploaded_file = file or audio
     if uploaded_file is None:
@@ -255,22 +262,12 @@ async def ingest_audio(
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Audio vacío")
 
-    transcribed_text = transcribe_audio(audio_bytes, suffix=extension)
-    if not transcribed_text:
-        raise HTTPException(status_code=400, detail="No se pudo extraer texto del audio")
-
-    result = _ingest_input(transcribed_text, db, content_type_override="audio")
+    background_tasks.add_task(_process_ingest_audio_task, audio_bytes, filename, extension)
 
     return {
         "filename": filename,
-        "transcription": transcribed_text,
-        "result": {
-            "id": result.id,
-            "type": result.type,
-            "cluster_id": result.cluster_id,
-            "similarity_score": result.similarity_score,
-        },
-        "status": "processed",
+        "status": "processing",
+        "queued": 1,
     }
 
 
@@ -282,11 +279,11 @@ async def ingest_audio(
 )
 async def ingest_file(
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile | None = File(None),
     document: UploadFile | None = File(None),
     file_type: str | None = Form(None),
     metadata: str | None = Form(None),
-    db: Session = Depends(get_db),
 ) -> dict:
     uploaded_file = file or document
     if uploaded_file is None:
@@ -315,121 +312,131 @@ async def ingest_file(
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Archivo vacío")
 
-    storage_info = save_uploaded_file(file_bytes, filename)
+    background_tasks.add_task(_process_ingest_file_task, file_bytes, filename, file_type, metadata)
 
-    if extension in AUDIO_FILE_EXTENSIONS:
-        transcribed_text = transcribe_audio(file_bytes, suffix=extension)
+    return {
+        "filename": filename,
+        "status": "processing",
+        "queued": 1,
+    }
+
+
+def _process_ingest_text_task(raw_input: str) -> None:
+    db = SessionLocal()
+    try:
+        _ingest_input(raw_input, db)
+    except Exception as exc:
+        print(f"[background][ingest] error: {exc}")
+    finally:
+        db.close()
+
+
+def _process_ingest_bulk_task(inputs: list[str]) -> None:
+    db = SessionLocal()
+    try:
+        _ingest_bulk(BulkIngestRequest(inputs=inputs, continue_on_error=True), db)
+    except Exception as exc:
+        print(f"[background][ingest-bulk] error: {exc}")
+    finally:
+        db.close()
+
+
+def _process_ingest_audio_task(audio_bytes: bytes, filename: str, extension: str) -> None:
+    db = SessionLocal()
+    try:
+        transcribed_text = transcribe_audio(audio_bytes, suffix=extension)
         if not transcribed_text:
-            raise HTTPException(status_code=400, detail="No se pudo extraer texto del audio")
+            raise ValueError("No se pudo extraer texto del audio")
+        _ingest_input(transcribed_text, db, content_type_override="audio", original_input_override=f"[AUDIO] {filename}")
+    except Exception as exc:
+        print(f"[background][ingest-audio] error: {exc}")
+    finally:
+        db.close()
+
+
+def _process_ingest_file_task(file_bytes: bytes, filename: str, file_type: str | None, metadata_raw: str | None) -> None:
+    db = SessionLocal()
+    try:
+        filename_extension = f".{filename.lower().split('.')[-1]}" if "." in filename else ""
+        declared_extension = _resolve_declared_file_extension(file_type=file_type, metadata_raw=metadata_raw)
+        extension = declared_extension or filename_extension
+
+        if extension not in SUPPORTED_FILE_EXTENSIONS and extension not in AUDIO_FILE_EXTENSIONS:
+            raise ValueError("Formato de archivo no soportado")
+
+        storage_info = save_uploaded_file(file_bytes, filename)
+
+        if extension in AUDIO_FILE_EXTENSIONS:
+            transcribed_text = transcribe_audio(file_bytes, suffix=extension)
+            if not transcribed_text:
+                raise ValueError("No se pudo extraer texto del audio")
+
+            metadata_overrides = {
+                "file_id": storage_info["file_id"],
+                "file_name": storage_info["original_filename"],
+                "file_storage_path": storage_info["stored_path"],
+                "file_size_bytes": storage_info["file_size_bytes"],
+                "declared_file_type": file_type,
+                "file_extension": extension,
+                "ingest_mode": "audio_file",
+                "transcription_chars": len(transcribed_text),
+            }
+
+            _ingest_input(
+                transcribed_text,
+                db,
+                content_type_override="audio",
+                original_input_override=f"[AUDIO_FILE] {filename}",
+                metadata_overrides=metadata_overrides,
+            )
+            return
+
+        extracted_text = extract_text_from_file(file_bytes, extension)
+        if not extracted_text:
+            raise ValueError("No se pudo extraer texto del archivo")
+
+        if FILE_LINK_FANOUT_ENABLED and extension in TEXT_FILE_FANOUT_EXTENSIONS:
+            extracted_urls = extract_all_link_urls(extracted_text)
+            if len(extracted_urls) >= FILE_LINK_FANOUT_MIN_LINKS:
+                _ingest_bulk(BulkIngestRequest(inputs=extracted_urls, continue_on_error=True), db)
+                return
+
+        file_title = extract_title_from_file(file_bytes, extension, filename)
+        file_semantic_views = build_semantic_views_for_file(extracted_text, file_title)
+        file_semantic_focus = semantic_focus_service.compose_focus_text(file_semantic_views)
+        file_embedding_seed = build_file_embedding_seed(file_semantic_views, file_title)
+        if not file_embedding_seed:
+            raise ValueError("No se pudo preparar representación semántica del archivo")
 
         metadata_overrides = {
             "file_id": storage_info["file_id"],
             "file_name": storage_info["original_filename"],
             "file_storage_path": storage_info["stored_path"],
             "file_size_bytes": storage_info["file_size_bytes"],
+            "file_title": file_title,
             "declared_file_type": file_type,
+            "extracted_chars": len(extracted_text),
+            "index_chars": len(file_embedding_seed),
+            "preview_text": extracted_text[:8000],
+            "deterministic_file_envelope": True,
             "file_extension": extension,
-            "ingest_mode": "audio_file",
-            "transcription_chars": len(transcribed_text),
         }
 
-        result = _ingest_input(
-            transcribed_text,
-            db,
-            content_type_override="audio",
-            original_input_override=f"[AUDIO_FILE] {filename}",
+        _ingest_input(
+            raw_input=file_embedding_seed,
+            db=db,
+            content_type_override="file",
+            use_semantic_focus=False,
+            original_input_override=f"[FILE] {file_title}",
             metadata_overrides=metadata_overrides,
+            semantic_focus_views_override=file_semantic_views,
+            semantic_focus_override=file_semantic_focus,
+            semantic_focus_source_override="deterministic_file_envelope",
         )
-
-        return {
-            "filename": filename,
-            "file_id": storage_info["file_id"],
-            "file_extension": extension,
-            "ingest_mode": "audio_file",
-            "transcription_chars": len(transcribed_text),
-            "result": {
-                "id": result.id,
-                "type": result.type,
-                "cluster_id": result.cluster_id,
-                "similarity_score": result.similarity_score,
-            },
-            "status": "processed",
-        }
-
-    try:
-        extracted_text = extract_text_from_file(file_bytes, extension)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if not extracted_text:
-        raise HTTPException(status_code=400, detail="No se pudo extraer texto del archivo")
-
-    if FILE_LINK_FANOUT_ENABLED and extension in TEXT_FILE_FANOUT_EXTENSIONS:
-        extracted_urls = extract_all_link_urls(extracted_text)
-        if len(extracted_urls) >= FILE_LINK_FANOUT_MIN_LINKS:
-            bulk_result = _ingest_bulk(BulkIngestRequest(inputs=extracted_urls, continue_on_error=True), db)
-            return {
-                "filename": filename,
-                "file_id": storage_info["file_id"],
-                "file_extension": extension,
-                "ingest_mode": "url_fanout",
-                "detected_urls": len(extracted_urls),
-                "results": bulk_result.model_dump(),
-                "status": "processed",
-            }
-
-    file_title = extract_title_from_file(file_bytes, extension, filename)
-
-    file_semantic_views = build_semantic_views_for_file(extracted_text, file_title)
-    file_semantic_focus = semantic_focus_service.compose_focus_text(file_semantic_views)
-    file_embedding_seed = build_file_embedding_seed(file_semantic_views, file_title)
-    if not file_embedding_seed:
-        raise HTTPException(status_code=400, detail="No se pudo preparar representación semántica del archivo")
-
-    metadata_overrides = {
-        "file_id": storage_info["file_id"],
-        "file_name": storage_info["original_filename"],
-        "file_storage_path": storage_info["stored_path"],
-        "file_size_bytes": storage_info["file_size_bytes"],
-        "file_title": file_title,
-        "declared_file_type": file_type,
-        "extracted_chars": len(extracted_text),
-        "index_chars": len(file_embedding_seed),
-        "preview_text": extracted_text[:8000],
-        "deterministic_file_envelope": True,
-        "file_extension": extension,
-    }
-
-    ingest_kwargs = {
-        "raw_input": file_embedding_seed,
-        "db": db,
-        "content_type_override": "file",
-        "use_semantic_focus": False,
-        "original_input_override": f"[FILE] {file_title}",
-        "metadata_overrides": metadata_overrides,
-    }
-    ingest_kwargs["semantic_focus_views_override"] = file_semantic_views
-    ingest_kwargs["semantic_focus_override"] = file_semantic_focus
-    ingest_kwargs["semantic_focus_source_override"] = "deterministic_file_envelope"
-
-    result = _ingest_input(
-        **ingest_kwargs,
-    )
-
-    return {
-        "filename": filename,
-        "file_title": file_title,
-        "file_id": storage_info["file_id"],
-        "extracted_chars": len(extracted_text),
-        "index_chars": len(file_embedding_seed),
-        "result": {
-            "id": result.id,
-            "type": result.type,
-            "cluster_id": result.cluster_id,
-            "similarity_score": result.similarity_score,
-        },
-        "status": "processed",
-    }
+    except Exception as exc:
+        print(f"[background][ingest-file] error: {exc}")
+    finally:
+        db.close()
 
 
 def _ingest_input(
