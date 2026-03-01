@@ -41,7 +41,8 @@ It also applies when an individual is officially representing the project or its
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the project maintainers at:
 
-- Alejandro Dopico: alejandro.dopico2@udc.es
+- Abel Juncal: abel.juncal@udc.es
+- Adolfo Fanjul: a.fsanchez1@udc.es
 - Mario Diez: mario.diez@udc.es
 - Antón Canzobre: antoncanzobremar@gmail.com
 
